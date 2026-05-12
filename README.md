@@ -125,6 +125,17 @@ cd FluxRT
 git clone https://huggingface.co/aydin99/FLUX.2-klein-4B-int8
 ```
 
+### Windows: Triton
+
+Required on Windows for `torch.compile` (inductor backend). Install after activating your environment:
+
+```bash
+pip install "triton-windows>=3.6,<3.7"
+```
+
+> Version constraint is based on PyTorch compatibility. For PyTorch 2.11.x use `>=3.6,<3.7`.
+> See [triton-windows compatibility](https://github.com/woct0rdho/triton-windows/issues/158) for other versions.
+
 <details>
 <summary>Required directory structure</summary>
 

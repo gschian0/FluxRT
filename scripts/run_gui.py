@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import platform
 import threading
 import time
 
@@ -30,6 +31,7 @@ from fluxrt.utils import crop_maximal_rectangle
 
 POLL_MS = 40
 MAX_CAM_INDEX = 8
+CAM_BACKEND = cv2.CAP_MSMF if platform.system() == "Windows" else cv2.CAP_V4L2
 DEFAULT_CONFIG = "configs/config_with_reference.json"
 
 # ── colour tokens ────────────────────────────────────────────────────────────
@@ -58,7 +60,7 @@ def log(msg: str) -> None:
 def enumerate_cameras() -> list[tuple[int, str]]:
     found = []
     for i in range(MAX_CAM_INDEX):
-        cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
+        cap = cv2.VideoCapture(i, CAM_BACKEND)
         if cap.isOpened():
             found.append((i, f"Camera {i}"))
             cap.release()
@@ -574,7 +576,7 @@ class MainWindow(QMainWindow):
             log("Start aborted: no camera selected")
             return
 
-        cap = cv2.VideoCapture(cam_idx, cv2.CAP_V4L2)
+        cap = cv2.VideoCapture(cam_idx, CAM_BACKEND)
         if not cap.isOpened():
             cap.release()
             self._cam_err_lbl.setText("Cannot open camera")
