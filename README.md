@@ -31,9 +31,9 @@ With resolution `512 × 512`, FluxRT achieves:
 
 FluxRT now includes interactive **GUI** that supports creating **Virtual Web Camera** to stream output in it.
 
-Virtual webcam can then be used as input of **OBS**, **TouchDesigner**, **Resolume**, **Zoom**, **Chrome** and almost every app that uses web camera.
+Virtual webcam can then be used as input of **OBS**, **Zoom**, **Chrome**, **TouchDesigner**, **Resolume** and almost every app that uses web camera.
 
-![GUI Demo](https://raw.githubusercontent.com/tensorforger/tensorforger/main/assets/gui.png)
+![GUI and OBS](https://raw.githubusercontent.com/tensorforger/tensorforger/main/assets/gui_and_obs.png)
 
 ## Real-Time Reference Image Workflows
 
@@ -81,6 +81,12 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+### Windows Notes
+
+1. GUI reqires [OBS](https://obsproject.com/download) to be installed to access virtual webcam. 
+
+2. `triton-windows` is required for model compilation. It would be installed automatically on windows, but if you have some issues check [triton-windows compatibility](https://github.com/woct0rdho/triton-windows/issues/158).
+
 ## 3. Download Required Models
 
 Ensure you have git lfs installed or run `git lfs install`
@@ -124,17 +130,6 @@ Note that downloading unquantized `FLUX.2-klein-4B` model (previous point) is **
 cd FluxRT
 git clone https://huggingface.co/aydin99/FLUX.2-klein-4B-int8
 ```
-
-### Windows: Triton
-
-Required on Windows for `torch.compile` (inductor backend). Install after activating your environment:
-
-```bash
-pip install "triton-windows>=3.6,<3.7"
-```
-
-> Version constraint is based on PyTorch compatibility. For PyTorch 2.11.x use `>=3.6,<3.7`.
-> See [triton-windows compatibility](https://github.com/woct0rdho/triton-windows/issues/158) for other versions.
 
 <details>
 <summary>Required directory structure</summary>
