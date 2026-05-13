@@ -172,6 +172,12 @@ FluxRT/
 
 To enable `int8` quantization you can either add falg `--int8` when running any script or set `enable_int8_quantization` to `true` in  the corresponding config.
 
+Run any script with conda environment activated:
+
+```bash
+conda activate fluxrt
+```
+
 ### GUI and Virtual Web Camera
 
 GUI supports:
