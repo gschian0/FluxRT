@@ -1,23 +1,14 @@
 # Flux Real-Time (FluxRT)
 
-Real-time **FLUX.2** image editing pipeline optimized for consumer GPUs.
+Real-time **FLUX.2** stream editing pipeline optimized for consumer GPUs.
 
-FluxRT enables low-latency live image transformation from **webcam**, **video files**, or other live inputs with **interactive prompt updates** and full **reference image conditioning** support.
+FluxRT enables low-latency transformation of **webcam stream** or **video** with **interactive prompt updates** and full **reference image conditioning** support.
 
-Unlike offline image-to-image or video-to-video workflows, FluxRT supports:
-- continuous streaming inference,
-- live prompt changes,
-- interactive reference-image conditioning,
-- low-latency frame scheduling,
-- spatially-aware KV reuse.
-
-And unlike [Stream Diffusion](https://github.com/cumulo-autumn/streamdiffusion) it uses **Instruct image editing model** [FLUX.2-Klein](https://bfl.ai/models/flux-2-klein) that opens very precise control and refernce image conditioning.
+Unlike [Stream Diffusion](https://github.com/cumulo-autumn/streamdiffusion) it uses **Instruct image editing model** [FLUX.2-Klein](https://bfl.ai/models/flux-2-klein) that opens very precise control and refernce image conditioning.
 
 The system is intended for:
 - AI VTubing
-- live stylization
 - virtual try-on
-- interactive art tools
 - creative coding
 
 With resolution `512 × 512`, FluxRT achieves:
@@ -29,7 +20,7 @@ With resolution `512 × 512`, FluxRT achieves:
 
 ![Main Demo](https://raw.githubusercontent.com/tensorforger/tensorforger/main/assets/main_demo.gif)
 
-FluxRT now includes interactive **GUI** that supports creating **Virtual Web Camera** to stream output in it.
+FluxRT includes interactive **GUI** that supports creating **Virtual Web Camera** to stream output in it.
 
 Virtual webcam can then be used as input of **OBS**, **Zoom**, **Chrome**, **TouchDesigner**, **Resolume** and almost every app that uses web camera.
 
@@ -48,8 +39,6 @@ Example 2: interactive paint-style app with iterative image updates.
 ![Interacive paint demo](https://raw.githubusercontent.com/tensorforger/tensorforger/main/assets/paint_demo.gif)
 
 
-# Quick Start
-
 ### System Requirements
 
 |           | Minimal (int8 only) | Recommended         |
@@ -59,12 +48,38 @@ Example 2: interactive paint-style app with iterative image updates.
 | RAM       | 16 GB               | 32 GB               |
 
 
+# Quick Start
+
+Ensure you have **git**, **git lfs** and **conda** installed.
+
+## Windows
+
+```bash
+git clone https://github.com/tensorforger/FluxRT
+cd FluxRT
+"scripts/install.bat"
+```
+
+GUI reqires [OBS](https://obsproject.com/download) to be installed to access virtual webcam. 
+
+## Linux
+
+```bash
+git clone https://github.com/tensorforger/FluxRT
+cd FluxRT
+sh scripts/install.sh
+```
+
+GUI reqires **v4l2loopback** to be installed and loaded to access virtual webcam. 
+
+# Manual Installation
+
 ## 1. Clone the Repository
 
 ```bash
 git clone https://github.com/tensorforger/FluxRT
 cd FluxRT
-````
+```
 
 ## 2. Install Dependencies
 
@@ -81,13 +96,9 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Windows Notes
+**Windows note**: `triton-windows` is required for model compilation. It would be installed automatically on windows, but if you have some issues check [triton-windows compatibility](https://github.com/woct0rdho/triton-windows/issues/158).
 
-1. GUI reqires [OBS](https://obsproject.com/download) to be installed to access virtual webcam. 
-
-2. `triton-windows` is required for model compilation. It would be installed automatically on windows, but if you have some issues check [triton-windows compatibility](https://github.com/woct0rdho/triton-windows/issues/158).
-
-## 3. Download Required Models
+## 3. Download Models
 
 Ensure you have git lfs installed or run `git lfs install`
 
