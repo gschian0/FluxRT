@@ -1,5 +1,5 @@
 {
-    "default_prompt" : "The man is now wearing this jacket.",
+    "default_prompt" : "Make professional soft light: cyberpunk gaming room, red and violet light, soft streamer's light, warm white light, cinematic, beautiful, professional, bokeh",
     "default_steps" : 2,
     "default_seed" : 52,
     "models_path" : "FLUX.2-klein-4B",

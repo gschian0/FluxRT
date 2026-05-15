@@ -18,7 +18,10 @@ from fluxrt.stream_processor.transformer_flux2 import Flux2Transformer2DModel
 from fluxrt.utils.shared_tensor import SharedTensor
 from fluxrt.stream_processor.pipeline import Flux2KleinPipeline
 from fluxrt.stream_processor.update_controller import UpdateController
-from fluxrt.stream_processor.postprocessors import BasePostProcessor, LivePortraitPostProcessor
+from fluxrt.stream_processor.postprocessors import (
+    BasePostProcessor,
+    LivePortraitPostProcessor,
+)
 
 
 class ModelInferenceSubprocess:
@@ -184,7 +187,9 @@ class ModelInferenceSubprocess:
         self.lip_active = False
         lp_cfg = self.config.get("lip_transfer", {})
         if lp_cfg.get("enable", False):
-            self.lip_processor = LivePortraitPostProcessor(models_dir=lp_cfg["models_dir"])
+            self.lip_processor = LivePortraitPostProcessor(
+                models_dir=lp_cfg["models_dir"]
+            )
 
     def update_prompt_embeds(self, prompt):
         self.prompt_embeds, text_ids = self.pipe.encode_prompt(
@@ -452,10 +457,13 @@ class ModelInferenceSubprocess:
         prev_time = time.time()
         while self.running.value:
             self.update_process_state()
-            frame = self.input_shared_tensor.to_numpy()
-            original_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            original_frame = self.input_shared_tensor.to_numpy()
+            original_frame = cv2.cvtColor(original_frame, cv2.COLOR_BGR2RGB)
             frame = self.process_frame_with_pipeline(original_frame)
             if self.lip_processor is not None and self.lip_active:
+                # Note: we are getting the latest input frame again after flux processing to reduce latency.
+                original_frame = self.input_shared_tensor.to_numpy()
+                original_frame = cv2.cvtColor(original_frame, cv2.COLOR_BGR2RGB)
                 frame = self.lip_processor.process(frame, original_frame)
             frame = self.convert_np_to_torch(frame)
             frames = self.interpolate_frames(frame)

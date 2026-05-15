@@ -168,25 +168,7 @@ Real-time face reenactment that transfers facial expressions from the webcam fee
 ```bash
 git clone https://github.com/KlingAIResearch/LivePortrait LivePortrait-code
 pip install -r requirements_lipsync.txt
-```
-
-Download models from [LivePortrait HuggingFace](https://huggingface.co/KwaiVGI/LivePortrait) and place them as follows:
-
-```text
-FluxRT/
-└── LivePortrait/
-    ├── liveportrait/
-    │   ├── base_models/
-    │   │   ├── appearance_feature_extractor.pth
-    │   │   ├── motion_extractor.pth
-    │   │   ├── spade_generator.pth
-    │   │   └── warping_module.pth
-    │   ├── retargeting_models/
-    │   │   └── stitching_retargeting_module.pth
-    │   └── landmark.onnx
-    └── insightface/
-        └── models/
-            └── buffalo_l/
+git clone https://huggingface.co/KwaiVGI/LivePortrait
 ```
 
 Add to your config JSON:
@@ -214,11 +196,24 @@ FluxRT/
 │   ├── tokenizer/
 │   ├── transformer/
 │   └── vae/
-└── FLUX.2-klein-4B-int8/ (optional)
-    ├── diffusion_pytorch_model.safetensors
-    ├── text_encoder/
-    ├── tokenizer/
-    └── vae/
+├── FLUX.2-klein-4B-int8/ (optional)
+│   ├── diffusion_pytorch_model.safetensors
+│   ├── text_encoder/
+│   ├── tokenizer/
+│   └── vae/
+└── LivePortrait/ (optional)
+    ├── liveportrait/
+    │   ├── base_models/
+    │   │   ├── appearance_feature_extractor.pth
+    │   │   ├── motion_extractor.pth
+    │   │   ├── spade_generator.pth
+    │   │   └── warping_module.pth
+    │   ├── retargeting_models/
+    │   │   └── stitching_retargeting_module.pth
+    │   └── landmark.onnx
+    └── insightface/
+        └── models/
+            └── buffalo_l/
 ```
 
 </details>
