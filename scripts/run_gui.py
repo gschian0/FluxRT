@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
     QLabel,
+    QLineEdit,
     QPushButton,
     QTextEdit,
     QComboBox,
@@ -28,6 +29,16 @@ from PySide6.QtWidgets import (
 
 from fluxrt import StreamProcessor
 from fluxrt.utils import crop_maximal_rectangle
+
+# ── Spout (Windows-only) ──────────────────────────────────────────────────────
+_SPOUT_AVAILABLE = False
+if platform.system() == "Windows":
+    try:
+        import SpoutGL
+
+        _SPOUT_AVAILABLE = True
+    except ImportError:
+        pass
 
 POLL_MS = 40
 MAX_CAM_INDEX = 8
@@ -272,7 +283,9 @@ QScrollBar::sub-line:horizontal {{
 
 # ── cross-thread signals ───────────────────────────────────────────────────────
 class _Signals(QObject):
-    launch_capture = Signal(object, int)  # (cv2.VideoCapture, cam_idx)
+    launch_capture = Signal(
+        object, int, str
+    )  # (cv2.VideoCapture | None, cam_idx, spout_name)
     sp_error = Signal(str)
     camera_error = Signal()
     vcam_error = Signal(str)
@@ -311,6 +324,10 @@ class MainWindow(QMainWindow):
         self._vcam_thread: threading.Thread | None = None
         self._vcam_stop = threading.Event()
         self._vcam_cam = None
+
+        self._spout_sender = None
+        self._spout_sender_thread: threading.Thread | None = None
+        self._spout_sender_stop = threading.Event()
 
         self._ref_full_path: str | None = None
 
@@ -383,6 +400,30 @@ class MainWindow(QMainWindow):
         cam_row_l.addWidget(self._cam_err_lbl)
         cam_row_l.addStretch()
         ctrl_layout.addWidget(cam_row, row, 1, 1, 2)
+        row += 1
+
+        # Spout input row (Windows / SpoutGL only)
+        self._spout_lbl = QLabel("Spout Input:")
+        ctrl_layout.addWidget(
+            self._spout_lbl,
+            row,
+            0,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        spout_row = self._ctrl_row()
+        spout_row_l = spout_row.layout()
+        self._spout_input_edit = QLineEdit()
+        self._spout_input_edit.setPlaceholderText(
+            "Sender name (leave blank to use camera)"
+        )
+        self._spout_input_edit.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        spout_row_l.addWidget(self._spout_input_edit)
+        spout_row_l.addStretch()
+        ctrl_layout.addWidget(spout_row, row, 1, 1, 2)
+        self._spout_lbl.setVisible(_SPOUT_AVAILABLE)
+        spout_row.setVisible(_SPOUT_AVAILABLE)
         row += 1
 
         # Prompt row
@@ -499,7 +540,9 @@ class MainWindow(QMainWindow):
             with open(path) as f:
                 cfg = json.load(f)
             self._use_ref_image = cfg.get("use_reference_image", False)
-            self._lip_transfer_in_config = cfg.get("lip_transfer", {}).get("enable", False)
+            self._lip_transfer_in_config = cfg.get("lip_transfer", {}).get(
+                "enable", False
+            )
             res = cfg.get("resolution", {})
             self._cfg_w = res.get("width", 576)
             self._cfg_h = res.get("height", 320)
@@ -601,19 +644,26 @@ class MainWindow(QMainWindow):
             self._begin_start()
 
     def _begin_start(self) -> None:
-        cam_idx = self._selected_cam_index()
-        if cam_idx is None:
-            self._cam_err_lbl.setText("No camera selected")
-            log("Start aborted: no camera selected")
-            return
+        spout_name = self._spout_input_edit.text().strip() if _SPOUT_AVAILABLE else ""
 
-        cap = cv2.VideoCapture(cam_idx, CAM_BACKEND)
-        if not cap.isOpened():
-            cap.release()
-            self._cam_err_lbl.setText("Cannot open camera")
-            log(f"Start aborted: cannot open camera {cam_idx}")
-            return
-        self._cam_err_lbl.setText("")
+        if spout_name:
+            # Spout input path — no camera needed
+            cap, cam_idx = None, -1
+            self._cam_err_lbl.setText("")
+        else:
+            # Camera path
+            cam_idx = self._selected_cam_index()
+            if cam_idx is None:
+                self._cam_err_lbl.setText("No camera selected")
+                log("Start aborted: no camera selected")
+                return
+            cap = cv2.VideoCapture(cam_idx, CAM_BACKEND)
+            if not cap.isOpened():
+                cap.release()
+                self._cam_err_lbl.setText("Cannot open camera")
+                log(f"Start aborted: cannot open camera {cam_idx}")
+                return
+            self._cam_err_lbl.setText("")
 
         if self._sp is None:
             self._sp_loading = True
@@ -624,13 +674,15 @@ class MainWindow(QMainWindow):
             prompt = self._prompt_edit.toPlainText()
             threading.Thread(
                 target=self._init_sp_thread,
-                args=(cap, cam_idx, prompt),
+                args=(cap, cam_idx, prompt, spout_name),
                 daemon=True,
             ).start()
         else:
-            self._on_launch_capture(cap, cam_idx)
+            self._on_launch_capture(cap, cam_idx, spout_name)
 
-    def _init_sp_thread(self, cap, cam_idx: int, prompt: str) -> None:
+    def _init_sp_thread(
+        self, cap, cam_idx: int, prompt: str, spout_name: str = ""
+    ) -> None:
         try:
             sp = StreamProcessor(self.config_path)
             if self._use_int8:
@@ -646,26 +698,35 @@ class MainWindow(QMainWindow):
                 self._apply_reference(self._ref_full_path)
             if self._lip_active:
                 sp.set_lip_transfer(True)
-            self._sig.launch_capture.emit(cap, cam_idx)
+            self._sig.launch_capture.emit(cap, cam_idx, spout_name)
         except Exception as exc:
             log(f"StreamProcessor init error: {exc}")
-            cap.release()
+            if cap is not None:
+                cap.release()
             self._sig.sp_error.emit(str(exc))
 
-    @Slot(object, int)
-    def _on_launch_capture(self, cap, cam_idx: int) -> None:
+    @Slot(object, int, str)
+    def _on_launch_capture(self, cap, cam_idx: int, spout_name: str = "") -> None:
         self._sp_loading = False
         self._capture_stop.clear()
         self._running = True
-        self._capture_thread = threading.Thread(
-            target=self._capture_loop, args=(cap,), daemon=True
-        )
+        if spout_name:
+            self._capture_thread = threading.Thread(
+                target=self._spout_input_loop, args=(spout_name,), daemon=True
+            )
+            status_msg = f"Running — Spout input: {spout_name}"
+        else:
+            self._capture_thread = threading.Thread(
+                target=self._capture_loop, args=(cap,), daemon=True
+            )
+            status_msg = f"Running — camera {cam_idx}"
         self._capture_thread.start()
         self._start_btn.setText("Stop")
         self._start_btn.setEnabled(True)
         self._vcam_btn.setEnabled(True)
-        self.statusBar().showMessage(f"Running — camera {cam_idx}")
-        log(f"Capture started on camera {cam_idx}")
+        self.statusBar().showMessage(status_msg)
+        log(f"Capture started: {status_msg}")
+        self._start_spout_output()
         self._start_vcam()
 
     @Slot(str)
@@ -679,6 +740,8 @@ class MainWindow(QMainWindow):
         self._capture_stop.set()
         if self._vcam_cam is not None:
             self._stop_vcam()
+        if self._spout_sender is not None:
+            self._stop_spout_output()
         self._running = False
         self._sp_loading = False
         self._start_btn.setText("Start")
@@ -725,6 +788,93 @@ class MainWindow(QMainWindow):
         self._start_btn.setEnabled(True)
         self._vcam_btn.setEnabled(False)
         self.statusBar().showMessage("Camera error — see terminal")
+
+    # ── spout input loop ───────────────────────────────────────────────────────
+
+    def _spout_input_loop(self, sender_name: str) -> None:
+        h = self._resolution["height"]
+        w = self._resolution["width"]
+        receiver = SpoutGL.SpoutReceiver()
+        receiver.setReceiverName(sender_name)
+        recv_w, recv_h = w, h
+        frame = np.empty((recv_h, recv_w, 3), dtype=np.uint8)
+        try:
+            while not self._capture_stop.is_set():
+                if receiver.isUpdated():
+                    recv_w = receiver.getSenderWidth()
+                    recv_h = receiver.getSenderHeight()
+                    frame = np.empty((recv_h, recv_w, 3), dtype=np.uint8)
+                result = receiver.receiveImage(frame, 0x1907, False, 0)
+                if result:
+                    frame = np.ascontiguousarray(frame)
+                    # Spout delivers RGB; pipeline expects BGR
+                    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    cropped = crop_maximal_rectangle(frame_bgr, h, w)
+                    with _sp_lock:
+                        self._input_tensor.copy_from(cropped)
+                        output_bgr = self._output_tensor.to_numpy()
+                    input_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+                    output_rgb = cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB)
+                    with self._frame_lock:
+                        self._latest_input = input_rgb
+                        self._latest_output = output_rgb
+                        self._latest_output_bgr = output_bgr
+                else:
+                    time.sleep(0.005)
+        finally:
+            receiver.releaseReceiver()
+
+    # ── spout output ───────────────────────────────────────────────────────────
+
+    def _start_spout_output(self) -> None:
+        if not _SPOUT_AVAILABLE or self._spout_sender is not None:
+            return
+        try:
+            sender = SpoutGL.SpoutSender()
+            sender.setSenderName("FluxRTOutput")
+            self._spout_sender = sender
+            self._spout_sender_stop.clear()
+            self._spout_sender_thread = threading.Thread(
+                target=self._spout_output_loop, daemon=True
+            )
+            self._spout_sender_thread.start()
+            log("Spout output started: FluxRTOutput")
+        except Exception as exc:
+            log(f"Spout output init error: {exc}")
+
+    def _stop_spout_output(self) -> None:
+        self._spout_sender_stop.set()
+        if self._spout_sender_thread is not None:
+            self._spout_sender_thread.join(timeout=2)
+            self._spout_sender_thread = None
+        if self._spout_sender is not None:
+            try:
+                self._spout_sender.releaseSender()
+            except Exception:
+                pass
+            self._spout_sender = None
+        log("Spout output stopped")
+
+    def _spout_output_loop(self) -> None:
+        sender = self._spout_sender
+        try:
+            while not self._spout_sender_stop.is_set():
+                with self._frame_lock:
+                    frame_bgr = self._latest_output_bgr
+                if frame_bgr is not None:
+                    fh, fw = frame_bgr.shape[:2]
+                    frame_rgb = np.ascontiguousarray(
+                        cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                    )
+                    try:
+                        sender.sendImage(frame_rgb, fw, fh, 0x1907, False, 0)
+                    except Exception as exc:
+                        log(f"Spout send error: {exc}")
+                        break
+                else:
+                    time.sleep(0.01)
+        finally:
+            pass
 
     # ── virtual camera ─────────────────────────────────────────────────────────
 
@@ -834,9 +984,15 @@ class MainWindow(QMainWindow):
         self._poll_timer.stop()
         self._capture_stop.set()
         self._vcam_stop.set()
+        self._spout_sender_stop.set()
         if self._vcam_cam is not None:
             try:
                 self._vcam_cam.__exit__(None, None, None)
+            except Exception:
+                pass
+        if self._spout_sender is not None:
+            try:
+                self._spout_sender.releaseSender()
             except Exception:
                 pass
         if self._sp is not None:

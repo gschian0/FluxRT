@@ -10,3 +10,4 @@ peft
 pyvirtualcam
 pyside6
 triton-windows>=3.6,<3.7; platform_system == "Windows"
+SpoutGL; platform_system == "Windows"
