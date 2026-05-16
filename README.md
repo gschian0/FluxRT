@@ -24,6 +24,8 @@ FluxRT includes interactive **GUI** that supports creating **Virtual Web Camera*
 
 Virtual webcam can then be used as input of **OBS**, **Zoom**, **Chrome**, **TouchDesigner**, **Resolume** and almost every app that uses web camera.
 
+On Windows GUI also supports **Spout** as input and output. Output has constant name `FluxRTOutput`. Input name is configurable in GUI.
+
 ![GUI and OBS](https://raw.githubusercontent.com/tensorforger/tensorforger/main/assets/gui_and_obs.png)
 
 As for **Daydream Scope**, the native [plugin](https://app.daydream.live/nodes/byMARCO/scope-flux-klein-4b-real-time) was implemented.
