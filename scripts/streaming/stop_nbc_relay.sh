@@ -4,6 +4,10 @@ set -euo pipefail
 # Separate operation: stops only the ffmpeg relay process.
 PID_FILE="${1:-/tmp/fluxrt-nbc-relay.pid}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
+
 if [[ ! -f "$PID_FILE" ]]; then
   echo "No PID file found: $PID_FILE"
   exit 0

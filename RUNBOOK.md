@@ -63,6 +63,39 @@ Then exit the container and stop the VM.
 - Code and local edits under `/home/gschi/FluxRT`
 - Python env in `/home/gschi/FluxRT/.venv` (if created with these scripts)
 
+## Backup for Recreate
+
+Capture these three artifacts before shutting down long-term:
+
+1. Git history and local commits:
+
+```bash
+cd /home/gschi/FluxRT
+git bundle create /home/gschi/FluxRT-backup-$(date +%F).bundle --all
+```
+
+2. Environment/VM manifest:
+
+```bash
+cd /home/gschi/FluxRT
+chmod +x scripts/export_env_manifest.sh
+scripts/export_env_manifest.sh
+```
+
+3. Infrastructure settings snapshot (from a machine with `gcloud` configured):
+
+```bash
+gcloud compute instances describe YOUR_VM_NAME --zone YOUR_ZONE > /home/gschi/FluxRT/backups/instance-describe.txt
+gcloud compute firewall-rules list > /home/gschi/FluxRT/backups/firewall-rules.txt
+```
+
+Recreate checklist:
+
+- Same GPU type/count and machine family.
+- Docker + NVIDIA runtime available.
+- Port 7860 ingress rule present.
+- Repo restored (`git clone` or bundle restore) and runbook scripts available.
+
 ## Commercial Use Note
 
 Current stack highlights:
