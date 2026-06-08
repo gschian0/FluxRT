@@ -123,7 +123,13 @@ class ModelInferenceSubprocess:
         state_dict = load_file(f"{int8_models_path}/text_encoder/model.safetensors")
         requantize(text_encoder, state_dict=state_dict, quantization_map=qmap)
         text_encoder.eval()
-        text_encoder.to(device, dtype=dtype)
+        try:
+            text_encoder.to(device, dtype=dtype)
+        except torch.OutOfMemoryError:
+            print(
+                "Quantized text encoder GPU placement OOM; keeping it on CPU to preserve rendering."
+            )
+            text_encoder.to("cpu")
         self.text_encoder = text_encoder
 
         self.tokenizer = Qwen2TokenizerFast.from_pretrained(

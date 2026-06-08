@@ -76,9 +76,12 @@ def set_reference_image_ui(image):
 
 
 def _video_loop(video_path: str, video_id: int):
-    """Background thread: process video frames and store in shared state."""
+    """Background thread: process local video frames and store in shared state."""
     global local_current_frame, local_processed_frame
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"Local video open failed: {video_path}")
+        return
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
     frame_time = 1.0 / fps
     try:
@@ -91,7 +94,12 @@ def _video_loop(video_path: str, video_id: int):
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 continue
             start = time.time()
-            input_frame, processed = process_frame(frame)
+            try:
+                input_frame, processed = process_frame(frame)
+            except Exception as exc:
+                print(f"Local video processing error: {exc}")
+                time.sleep(0.1)
+                continue
             with local_frame_lock:
                 local_current_frame = to_rgb(input_frame)
                 local_processed_frame = to_rgb(processed)
