@@ -132,6 +132,36 @@ Rollback:
 scripts/streaming/stop_nbc_relay.sh
 ```
 
+## Stage 4.5: Run Separate Stream Demo App (Side-by-Side)
+
+Goal:
+- Keep the known-good app on 7860 untouched.
+- Run stream ingest tests in a separate Gradio app on 7861.
+
+Commands (inside your container):
+
+```bash
+cd /workspace
+chmod +x scripts/start_gradio_stream_demo.sh
+scripts/start_gradio_stream_demo.sh
+```
+
+Open:
+
+- Baseline app: `http://127.0.0.1:7860`
+- Stream demo app: `http://127.0.0.1:7861`
+
+Notes:
+
+- The stream demo script is `scripts/run_gradio_stream_demo.py`.
+- It has its own log at `/tmp/fluxrt-gradio-stream.log`.
+
+Rollback:
+
+```bash
+pkill -f scripts/run_gradio_stream_demo.py || true
+```
+
 ## Stage 5: Optional Future Ingest Experiment (Separate Branch)
 
 Goal:

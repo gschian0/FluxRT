@@ -4,6 +4,10 @@ set -euo pipefail
 # Separate operation: starts an ffmpeg relay for NBC HLS without touching FluxRT app process.
 # Output is a local UDP MPEG-TS endpoint that other tools can ingest.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
+
 SRC_URL="${1:-https://xumo-xumoent-vc-105-z0vpm.fast.nbcuni.com/live/master.m3u8}"
 OUT_URL="${2:-udp://127.0.0.1:5000?pkt_size=1316}"
 LOG_FILE="${3:-/tmp/fluxrt-nbc-relay.log}"
