@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FluxRT Cloud Stream</title>
+  <style>
+    :root { --ok:#3ddc97; --bad:#ff6b6b; --accent:#ecb365; }
+    body { margin:0; min-height:100vh; overflow:hidden; background:#000; color:#fff; font-family:Segoe UI,sans-serif; }
+    #video { position:fixed; inset:0; width:100vw; height:100vh; object-fit:contain; background:#000; }
+    .hud { position:fixed; z-index:10; padding:10px 14px; border-radius:12px; background:rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.25); }
+    #status { top:16px; left:16px; display:flex; gap:8px; align-items:center; }
+    #dot { width:10px; height:10px; border-radius:50%; background:var(--bad); }
+    #connectBtn { right:16px; bottom:18px; border:0; border-radius:999px; padding:12px 18px; font-weight:700; background:var(--accent); color:#222; cursor:pointer; }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline muted></video>
+  <div id="status" class="hud"><span id="dot"></span><span id="statusText">Disconnected</span></div>
+  <button id="connectBtn" class="hud">Connect to Cloud</button>
+  <script>
+    const OFFER_URL = "http://34.134.149.109:8080/offer";
+    const videoEl = document.getElementById("video");
+    const connectBtn = document.getElementById("connectBtn");
+    const statusText = document.getElementById("statusText");
+    const dot = document.getElementById("dot");
+    let pc = null;
+
+    function setStatus(text, good) {
+      statusText.textContent = text;
+      dot.style.background = good ? "var(--ok)" : "var(--bad)";
+    }
+
+    async function connect() {
+      connectBtn.disabled = true;
+      setStatus("Connecting...", false);
+      pc = new RTCPeerConnection({ iceServers: [{ urls: ["stun:stun.l.google.com:19302"] }] });
+      pc.ontrack = (event) => {
+        if (event.streams && event.streams[0]) {
+          videoEl.srcObject = event.streams[0];
+        } else {
+          videoEl.srcObject = new MediaStream([event.track]);
+        }
+      };
+      pc.onconnectionstatechange = () => {
+        const s = pc.connectionState;
+        if (s === "connected") { setStatus("Connected", true); connectBtn.textContent = "Reconnect"; connectBtn.disabled = false; }
+        if (["failed","disconnected","closed"].includes(s)) { setStatus("State: " + s, false); connectBtn.textContent = "Connect to Cloud"; connectBtn.disabled = false; }
+      };
+
+      try {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        const res = await fetch(OFFER_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const answer = await res.json();
+        await pc.setRemoteDescription(answer);
+        setStatus("Negotiated, waiting for video...", true);
+      } catch (e) {
+        setStatus("Error: " + e.message, false);
+        connectBtn.textContent = "Connect to Cloud";
+        connectBtn.disabled = false;
+      }
+    }
+
+    connectBtn.addEventListener("click", async () => {
+      if (pc) { pc.close(); pc = null; }
+      await connect();
+    });
+  </script>
+</body>
+</html>
