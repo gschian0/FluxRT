@@ -15,7 +15,8 @@ Run a GPU container with the repo mounted at `/workspace`:
 
 ```bash
 sudo docker run --rm -it --gpus all \
-  -p 7860:7860 \
+  -p 7862:7862 \
+  -p 7861:7861 \
   -v /home/gschi/FluxRT:/workspace \
   -w /workspace \
   nvcr.io/nvidia/pytorch:24.10-py3 \
@@ -32,8 +33,8 @@ scripts/start_gradio.sh
 
 Open:
 
-- Local: `http://127.0.0.1:7860`
-- Public VM IP: `http://34.134.149.109:7860`
+- Baseline app (default): `http://127.0.0.1:7862`
+- Stream demo (default): `http://127.0.0.1:7861`
 
 ## Daily Fast Resume
 
@@ -41,6 +42,12 @@ If `.venv` already exists in `/workspace`, skip bootstrap and just run:
 
 ```bash
 scripts/start_gradio.sh
+```
+
+Optional override for baseline app port:
+
+```bash
+APP_PORT=7870 scripts/start_gradio.sh
 ```
 
 ## Stop Workflow
@@ -56,7 +63,7 @@ Then exit the container and stop the VM.
 ## Logs and Health
 
 - App log: `/tmp/fluxrt-gradio.log`
-- Health check: `curl -I http://127.0.0.1:7860`
+- Health check (baseline default): `curl -I http://127.0.0.1:7862`
 
 ## What Is Persisted
 

@@ -27,13 +27,15 @@ frame_lock = threading.Lock()
 
 stream_status = "idle"
 stream_status_lock = threading.Lock()
+process_frame_counter = 0
+stream_config_path = "configs/stream_demo_config.json"
 
 
 def get_processor():
     global stream_processor, input_tensor, output_tensor, resolution
 
     if stream_processor is None:
-        stream_processor = StreamProcessor("configs/stream_processor_config.json")
+        stream_processor = StreamProcessor(stream_config_path)
         if use_int8:
             stream_processor.enable_quantization()
         stream_processor.start()
@@ -44,6 +46,37 @@ def get_processor():
         resolution = stream_processor.get_resolution()
 
     return stream_processor, input_tensor, output_tensor, resolution
+
+
+def _workers_alive() -> bool:
+    sp = stream_processor
+    if sp is None:
+        return False
+    try:
+        mi_proc = sp.model_inference_subprocess.process
+        out_proc = sp.output_scheduler_subprocess.process
+        return bool(
+            mi_proc is not None
+            and out_proc is not None
+            and mi_proc.is_alive()
+            and out_proc.is_alive()
+        )
+    except Exception:
+        return False
+
+
+def reset_processor(reason: str):
+    global stream_processor, input_tensor, output_tensor, resolution
+    set_status(f"recovering: {reason}")
+    if stream_processor is not None:
+        try:
+            stream_processor.stop()
+        except Exception:
+            pass
+    stream_processor = None
+    input_tensor = None
+    output_tensor = None
+    resolution = None
 
 
 def to_bgr(frame):
@@ -59,6 +92,10 @@ def to_rgb(frame):
 
 
 def process_frame(frame):
+    global process_frame_counter
+    if stream_processor is not None and not _workers_alive():
+        reset_processor("worker down")
+
     _, local_input_tensor, local_output_tensor, local_resolution = get_processor()
     frame = crop_maximal_rectangle(
         frame, local_resolution["height"], local_resolution["width"]
@@ -67,6 +104,18 @@ def process_frame(frame):
     with processor_lock:
         local_input_tensor.copy_from(frame)
         processed = local_output_tensor.to_numpy()
+
+    process_frame_counter += 1
+    if process_frame_counter % 90 == 0:
+        p_min = int(processed.min())
+        p_max = int(processed.max())
+        p_mean = float(processed.mean())
+        if p_max == 0:
+            set_status("processed output is all zeros (inference likely not running)")
+        print(
+            f"[stream-demo] processed stats: min={p_min} max={p_max} mean={p_mean:.2f}"
+        )
+
     return frame, processed
 
 
@@ -89,6 +138,21 @@ def set_status(value: str):
 def get_status() -> str:
     with stream_status_lock:
         return stream_status
+
+
+def get_worker_health() -> str:
+    sp = stream_processor
+    if sp is None:
+        return "workers: not initialized"
+
+    try:
+        mi_proc = sp.model_inference_subprocess.process
+        out_proc = sp.output_scheduler_subprocess.process
+        mi_alive = bool(mi_proc is not None and mi_proc.is_alive())
+        out_alive = bool(out_proc is not None and out_proc.is_alive())
+        return f"workers: inference={mi_alive} scheduler={out_alive}"
+    except Exception:
+        return "workers: unknown"
 
 
 def _local_video_loop(video_path: str, video_id: int):
@@ -235,7 +299,8 @@ def stop_video_source():
 
 def poll_video():
     with frame_lock:
-        return current_input_frame, current_processed_frame, get_status()
+        status = f"{get_status()} | {get_worker_health()}"
+        return current_input_frame, current_processed_frame, status
 
 
 def switch_mode(mode: str, request: gr.Request | None):
@@ -267,9 +332,15 @@ def process_webcam(frame):
 
 
 def main():
-    global use_int8
+    global use_int8, stream_config_path
     parser = argparse.ArgumentParser(description="Run FluxRT Stream Gradio demo.")
     parser.add_argument("--int8", action="store_true", help="Enable int8 quantization")
+    parser.add_argument(
+        "--config-path",
+        type=str,
+        default="configs/stream_demo_config.json",
+        help="Stream processor config path",
+    )
     parser.add_argument(
         "--server-port", type=int, default=7861, help="Port for stream demo app"
     )
@@ -278,6 +349,7 @@ def main():
     )
     args, _ = parser.parse_known_args()
     use_int8 = args.int8
+    stream_config_path = args.config_path
 
     get_processor()
     use_reference_image = stream_processor.config.get("use_reference_image", False)

@@ -161,6 +161,12 @@ def main():
     global use_int8
     parser = argparse.ArgumentParser(description="Run FluxRT Gradio demo.")
     parser.add_argument("--int8", action="store_true", help="Enable int8 quantization")
+    parser.add_argument(
+        "--server-port", type=int, default=7862, help="Port for baseline app"
+    )
+    parser.add_argument(
+        "--server-name", type=str, default="0.0.0.0", help="Bind address"
+    )
     args, _ = parser.parse_known_args()
     use_int8 = args.int8
 
@@ -258,7 +264,7 @@ def main():
             )
 
     demo.queue(default_concurrency_limit=1).launch(
-        server_name="0.0.0.0", server_port=7860
+        server_name=args.server_name, server_port=args.server_port
     )
 
 
