@@ -45,7 +45,8 @@ class UpdateController:
             self.previous_reset = time.time()
 
         self.reset_period = reset_period
-        self.requires_reset = False
+        # Force a full update on the first frame so image cache is initialized.
+        self.requires_reset = True
         self.text_is_valid = False
         self.reference_image_is_valid = False
         self.config = config
