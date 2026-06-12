@@ -36,6 +36,48 @@ Open:
 - Baseline app (default): `http://127.0.0.1:7862`
 - Stream demo (default): `http://127.0.0.1:7861`
 
+## Run My Tweak (Stream Demo on 7861)
+
+Use this flow to run the working stream demo tweak on port 7861.
+
+From host (recommended):
+
+```bash
+cd /home/gschi/FluxRT
+pkill -f 'scripts/run_gradio_stream_demo.py' || true
+APP_HOST=0.0.0.0 APP_PORT=7861 ./scripts/start_gradio_stream_demo.sh
+```
+
+Quick health checks:
+
+```bash
+ss -ltnp | grep ':7861'
+curl -I --max-time 8 http://127.0.0.1:7861
+pgrep -af 'scripts/run_gradio_stream_demo.py'
+```
+
+Public URL (replace with your current external IP):
+
+- `http://YOUR_EXTERNAL_IP:7861`
+
+Get current external IP:
+
+```bash
+curl -s ifconfig.me || curl -s https://api.ipify.org
+```
+
+If public URL does not open, add GCP firewall for 7861:
+
+```bash
+gcloud compute firewall-rules create allow-fluxrt-7861 \
+  --direction=INGRESS \
+  --priority=1000 \
+  --network=default \
+  --action=ALLOW \
+  --rules=tcp:7861 \
+  --source-ranges=0.0.0.0/0
+```
+
 ## Daily Fast Resume
 
 If `.venv` already exists in `/workspace`, skip bootstrap and just run:
