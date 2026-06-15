@@ -163,3 +163,156 @@ To avoid breaking the known-good local app, use the separate staged plan:
 - Relay helper scripts:
   - `scripts/streaming/start_nbc_relay.sh`
   - `scripts/streaming/stop_nbc_relay.sh`
+
+## RTMP Fanout Upgrade (FluxRT First)
+
+Use this flow to publish one stream to multiple platforms from FluxRT.
+
+1. Keep stream demo running on 7861 as usual.
+2. Start local source relay (NBC example) to feed ffmpeg fanout input:
+
+```bash
+cd /home/gschi/FluxRT
+chmod +x scripts/streaming/start_nbc_relay.sh scripts/streaming/stop_nbc_relay.sh
+scripts/streaming/start_nbc_relay.sh
+```
+
+3. Configure RTMP targets:
+
+```bash
+cd /home/gschi/FluxRT
+cp scripts/streaming/rtmp_targets.env.example scripts/streaming/rtmp_targets.env
+```
+
+Edit `scripts/streaming/rtmp_targets.env` and set one or more:
+
+- `YOUTUBE_RTMP_URL`
+- `TWITCH_RTMP_URL`
+- `FACEBOOK_RTMP_URL`
+
+Optional per-platform switches in the same env file:
+
+- `ENABLE_YOUTUBE=0` to disable YouTube output
+- `ENABLE_TWITCH=1` to keep Twitch output on
+- `ENABLE_FACEBOOK=0` if Facebook is unused
+
+4. Start RTMP fanout:
+
+```bash
+cd /home/gschi/FluxRT
+chmod +x scripts/streaming/start_rtmp_fanout.sh scripts/streaming/stop_rtmp_fanout.sh
+scripts/streaming/start_rtmp_fanout.sh
+```
+
+Current locked defaults (stable profile):
+
+- `FPS=12`
+- `OUTPUT_WIDTH=426`
+- `OUTPUT_HEIGHT=240`
+- `VIDEO_BITRATE=2200k`
+- `VIDEO_MAXRATE=2200k`
+- `VIDEO_BUFSIZE=1800k`
+- `AUDIO_BITRATE=128k`
+- `X264_PRESET=ultrafast`
+- `GOP=FPS*2` (2-second keyframes)
+
+Override any setting at launch (examples):
+
+```bash
+cd /home/gschi/FluxRT
+FPS=15 VIDEO_BITRATE=1200k VIDEO_MAXRATE=1200k VIDEO_BUFSIZE=2400k \
+OUTPUT_WIDTH=640 OUTPUT_HEIGHT=360 X264_PRESET=veryfast \
+scripts/streaming/start_rtmp_fanout.sh
+```
+
+You can also change only one variable without touching others:
+
+```bash
+cd /home/gschi/FluxRT
+VIDEO_BITRATE=1500k scripts/streaming/start_rtmp_fanout.sh
+```
+
+Temporary YouTube-off launch (without editing env file):
+
+```bash
+cd /home/gschi/FluxRT
+ENABLE_YOUTUBE=0 scripts/streaming/start_rtmp_fanout.sh
+```
+
+If YouTube shows "Preparing stream" for too long, keep `GOP` at `FPS*2` and avoid disabling forced keyframes.
+
+5. Check fanout health:
+
+```bash
+cat /tmp/fluxrt-rtmp-fanout.pid
+ps -fp "$(cat /tmp/fluxrt-rtmp-fanout.pid)"
+tail -n 120 /tmp/fluxrt-rtmp-fanout.log
+```
+
+6. Stop fanout:
+
+```bash
+cd /home/gschi/FluxRT
+scripts/streaming/stop_rtmp_fanout.sh
+```
+
+Notes:
+
+- Default fanout input is `udp://127.0.0.1:5000?pkt_size=1316`.
+- Override input with `INPUT_URL=... scripts/streaming/start_rtmp_fanout.sh`.
+- Keep real stream keys in `scripts/streaming/rtmp_targets.env` (local only, not committed).
+
+## Stopping Everything
+
+If you need to stop all streams, the inference engine, and the application cleanly, run these commands:
+
+```bash
+cd /home/gschi/FluxRT
+
+# 1. Stop the RTMP Fanout (Twitch/YouTube)
+scripts/streaming/stop_rtmp_fanout.sh || true
+
+# 2. Stop the local NBC relay (if you were using it)
+scripts/streaming/stop_nbc_relay.sh || true
+
+# 3. Stop the Gradio application and the rendering engine
+pkill -f 'scripts/run_gradio_stream_demo.py' || true
+```
+
+## MusicGen Radio (musicgenRADIO branch)
+
+This branch includes a radio-conditioned MusicGen loop for installation/research use.
+
+Files:
+
+- `scripts/run_musicgen_radio_plus_musicGEN.py`
+- `scripts/start_musicgen_radio_plus_musicGEN.sh`
+- `scripts/stop_musicgen_radio_plus_musicGEN.sh`
+- `requirements_musicgen_plus_musicGEN.txt`
+
+Install deps in your active `.venv`:
+
+```bash
+cd /home/gschi/FluxRT
+source .venv/bin/activate
+pip install -r requirements_musicgen_plus_musicGEN.txt
+```
+
+Start generator:
+
+```bash
+cd /home/gschi/FluxRT
+RADIO_URL="https://your-radio-stream-url" scripts/start_musicgen_radio_plus_musicGEN.sh
+```
+
+Stop generator:
+
+```bash
+cd /home/gschi/FluxRT
+scripts/stop_musicgen_radio_plus_musicGEN.sh
+```
+
+Runtime output:
+
+- Log: `/tmp/fluxrt-musicgen-radio.log`
+- Generated clips: `musicgen_output_plus_musicGEN/`

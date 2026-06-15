@@ -219,3 +219,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local RTMP target secrets
+scripts/streaming/rtmp_targets.env
