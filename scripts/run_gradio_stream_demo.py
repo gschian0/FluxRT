@@ -13,8 +13,10 @@ import gradio as gr
 from fluxrt import StreamProcessor
 from fluxrt.utils import crop_maximal_rectangle
 
-default_prompt = "Turn this image into cyberpunk night, red and blue neon lamps, bokeh"
-default_stream_url = "https://xumo-xumoent-vc-105-z0vpm.fast.nbcuni.com/live/master.m3u8"
+default_prompt = "claymation"
+default_stream_url = "https://30a-tv.com/feeds/masters/30atv.m3u8"
+default_music_radio_url = "https://www.internet-radio.com/servers/tools/playlistgenerator/?u=http://uk7.internet-radio.com:8000/listen.pls&t=.m3u"
+default_music_station_name = "internet-radio.com default station"
 
 stream_processor = None
 input_tensor = None
@@ -40,7 +42,11 @@ overlay_enabled = True
 overlay_enabled_lock = threading.Lock()
 stream_channel_map = {}
 stream_channel_map_lock = threading.Lock()
+music_station_map = {}
+music_station_map_lock = threading.Lock()
 repo_catalog_paths = {}
+
+music_station_map[default_music_station_name] = default_music_radio_url
 
 udp_writer = None
 udp_writer_lock = threading.Lock()
@@ -73,7 +79,7 @@ def _get_udp_writer(width, height, fps=25):
                 '-r', str(fps),
                 '-i', '-',
                 '-c:v', 'libx264',
-                '-preset', 'veryfast',
+                '-preset', 'ultrafast',
                 '-tune', 'zerolatency',
                 '-g', '50',
                 '-keyint_min', '50',
@@ -336,6 +342,216 @@ def apply_channel_choice(channel_name: str):
     return gr.update(value=url)
 
 
+def load_music_station_catalog(m3u_text: str):
+    stations = parse_m3u_channels(m3u_text)
+    with music_station_map_lock:
+        music_station_map.clear()
+        for name, url in stations:
+            music_station_map[name] = url
+
+    if not stations:
+        set_status("music station catalog: no stations parsed")
+        return gr.update(choices=[], value=None), gr.update()
+
+    first_name, first_url = stations[0]
+    set_status(f"music station catalog loaded: {len(stations)} stations")
+    return gr.update(choices=[name for name, _ in stations], value=first_name), gr.update(value=first_url)
+
+
+def apply_music_station_choice(station_name: str):
+    with music_station_map_lock:
+        url = music_station_map.get(station_name, "")
+    if not url:
+        return gr.update()
+    set_status(f"music station selected: {station_name}")
+    return gr.update(value=url)
+
+
+def _repo_root() -> str:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(script_dir)
+
+
+def _radio_stations_dir() -> str:
+    return os.path.join(_repo_root(), "radio-stations")
+
+
+def load_music_stations_from_repo_files() -> list[str]:
+    base = _radio_stations_dir()
+    parsed: list[tuple[str, str]] = []
+    if os.path.isdir(base):
+        for name in sorted(os.listdir(base)):
+            if not name.endswith(".m3u"):
+                continue
+            path = os.path.join(base, name)
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    entries = parse_m3u_channels(f.read())
+            except Exception:
+                continue
+            for station_name, station_url in entries:
+                label = f"{os.path.splitext(name)[0]} | {station_name}"
+                parsed.append((label, station_url))
+
+    with music_station_map_lock:
+        music_station_map.clear()
+        for label, url in parsed:
+            music_station_map[label] = url
+        if not music_station_map:
+            music_station_map[default_music_station_name] = default_music_radio_url
+        return list(music_station_map.keys())
+
+
+def start_musicgen_stream(
+    radio_url: str,
+    base_prompt: str,
+    sample_seconds: int,
+    gen_seconds: int,
+    stream_delay_seconds: float,
+    crossfade_seconds: float,
+):
+    if not radio_url or not radio_url.strip():
+        return "musicgen: radio URL required"
+
+    env = os.environ.copy()
+    env["RADIO_URL"] = radio_url.strip()
+    env["MUSICGEN_BASE_PROMPT"] = (base_prompt or "experimental electronic sound art").strip()
+    env["MUSICGEN_SAMPLE_SECONDS"] = str(int(sample_seconds))
+    env["MUSICGEN_GEN_SECONDS"] = str(int(gen_seconds))
+    env["MUSICGEN_STREAM_DELAY_SECONDS"] = str(float(stream_delay_seconds))
+    env["MUSICGEN_CROSSFADE_SECONDS"] = str(float(crossfade_seconds))
+    env["MUSICGEN_PAUSE_SECONDS"] = "0.1"
+    env["MUSICGEN_AUDIO_UDP_URL"] = "udp://127.0.0.1:5002?pkt_size=1316"
+
+    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/start_musicgen_radio_plus_musicGEN.sh"]
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        msg = (result.stderr or result.stdout or "unknown error").strip()
+        set_status(f"musicgen start failed: {msg}")
+        return f"musicgen start failed: {msg}"
+
+    set_status(f"broadcast waiting on backing track: buffering {float(stream_delay_seconds):.0f}s")
+    return (
+        (result.stdout or "musicgen stream started").strip()
+        + f"\nBroadcast waiting on backing track buffer ({float(stream_delay_seconds):.0f}s)."
+    )
+
+
+def stop_musicgen_stream():
+    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/stop_musicgen_radio_plus_musicGEN.sh"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    msg = (result.stdout or result.stderr or "musicgen stopped").strip()
+    set_status("musicgen stream stopped")
+    return msg
+
+
+def start_fanout_with_music(enable_youtube: bool, enable_twitch: bool, enable_facebook: bool):
+    if not (enable_youtube or enable_twitch or enable_facebook):
+        set_status("fanout start skipped: no platform enabled")
+        return "fanout start skipped: enable at least one platform"
+
+    enable_youtube_str = "1" if enable_youtube else "0"
+    enable_twitch_str = "1" if enable_twitch else "0"
+    enable_facebook_str = "1" if enable_facebook else "0"
+
+    cmd = [
+        "bash",
+        "-lc",
+        "cd /home/gschi/FluxRT && "
+        "scripts/streaming/stop_rtmp_fanout.sh || true; "
+        f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} AUDIO_SOURCE_MODE=url "
+        "AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316' "
+        "scripts/streaming/start_rtmp_fanout.sh",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        msg = (result.stderr or result.stdout or "fanout start failed").strip()
+        set_status(f"fanout start failed: {msg}")
+        return f"fanout start failed: {msg}"
+    set_status("fanout started (music+video to Twitch)")
+    return (result.stdout or "fanout started").strip()
+
+
+def _latest_musicgen_clip() -> str | None:
+    output_dir = os.path.join(_repo_root(), "musicgen_output_plus_musicGEN")
+    if not os.path.isdir(output_dir):
+        return None
+
+    candidates = [
+        os.path.join(output_dir, name)
+        for name in os.listdir(output_dir)
+        if name.endswith(".wav") and name.startswith("musicgen_clip_")
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=os.path.getmtime)
+
+
+def _read_marker(marker_name: str) -> str | None:
+    marker_path = os.path.join(_repo_root(), "musicgen_output_plus_musicGEN", marker_name)
+    if not os.path.isfile(marker_path):
+        return None
+    try:
+        path = open(marker_path, "r", encoding="utf-8").read().strip()
+    except Exception:
+        return None
+    if not path:
+        return None
+    return path if os.path.isfile(path) else None
+
+
+def _clip_index_from_path(path: str | None) -> int | None:
+    if not path:
+        return None
+    name = os.path.basename(path)
+    m = re.search(r"musicgen_clip_(\d+)\.wav$", name)
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def poll_musicgen_preview():
+    now_clip = _read_marker("now_playing_path.txt")
+    latest_clip = _latest_musicgen_clip()
+
+    output_dir = os.path.join(_repo_root(), "musicgen_output_plus_musicGEN")
+    all_clips = []
+    if os.path.isdir(output_dir):
+        for name in os.listdir(output_dir):
+            if name.startswith("musicgen_clip_") and name.endswith(".wav"):
+                all_clips.append(os.path.join(output_dir, name))
+
+    all_clips.sort(key=lambda p: _clip_index_from_path(p) or -1)
+
+    now_value = now_clip or latest_clip
+    now_idx = _clip_index_from_path(now_value)
+
+    edit_value = None
+    if now_idx is not None:
+        for clip in all_clips:
+            clip_idx = _clip_index_from_path(clip)
+            if clip_idx is not None and clip_idx > now_idx:
+                edit_value = clip
+                break
+    if edit_value is None:
+        marker_edit = _read_marker("editing_path.txt")
+        marker_idx = _clip_index_from_path(marker_edit)
+        if marker_edit and marker_idx is not None and (now_idx is None or marker_idx > now_idx):
+            edit_value = marker_edit
+
+    if now_value is None and edit_value is None:
+        return (
+            gr.update(value=None),
+            gr.update(value=None),
+            "now feed: no clip",
+            "edit feed: no clip",
+        )
+
+    now_text = f"now feed: {os.path.basename(now_value)}" if now_value else "now feed: waiting"
+    edit_text = f"edit feed: {os.path.basename(edit_value)}" if edit_value else "edit feed: waiting for next clip"
+    return gr.update(value=now_value), gr.update(value=edit_value), now_text, edit_text
+
+
 def render_frame(frame_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if frame_bgr is None:
         return frame_bgr, frame_bgr
@@ -350,6 +566,34 @@ def to_rgb(frame):
     if frame is None:
         return None
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+
+def _placeholder_rgb(message: str, width: int = 640, height: int = 360) -> np.ndarray:
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    cv2.rectangle(canvas, (0, 0), (width, height), (12, 12, 12), -1)
+    cv2.putText(
+        canvas,
+        "FluxRT Loading",
+        (24, 56),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (210, 210, 210),
+        2,
+    )
+
+    msg = re.sub(r"\s+", " ", (message or "waiting for frames").strip())
+    if len(msg) > 64:
+        msg = msg[:61] + "..."
+    cv2.putText(
+        canvas,
+        msg,
+        (24, 104),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (160, 220, 255),
+        2,
+    )
+    return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
 
 
 def process_frame(frame):
@@ -574,7 +818,17 @@ def stop_video_source():
 def poll_video():
     with frame_lock:
         status = f"{get_status()} | {get_worker_health()}"
-        return current_input_frame, current_processed_frame, status
+        input_frame = current_input_frame
+        processed_frame = current_processed_frame
+
+    if input_frame is None:
+        input_frame = _placeholder_rgb(f"Input: {status}")
+    if processed_frame is None:
+        processed_frame = _placeholder_rgb(f"Processed: {status}")
+    elif isinstance(processed_frame, np.ndarray) and processed_frame.size > 0 and int(processed_frame.max()) == 0:
+        processed_frame = _placeholder_rgb(f"Processed warming up: {status}")
+
+    return input_frame, processed_frame, status
 
 
 def switch_mode(mode: str, request: gr.Request | None):
@@ -631,7 +885,9 @@ def main():
     get_processor()
     repo_catalog_paths = discover_repo_catalogs()
     catalog_choices = list(repo_catalog_paths.keys())
-    default_catalog = catalog_choices[0] if catalog_choices else None
+    default_catalog = "us_30a" if "us_30a" in repo_catalog_paths else (catalog_choices[0] if catalog_choices else None)
+    initial_music_station_choices = load_music_stations_from_repo_files()
+    default_music_choice = initial_music_station_choices[0] if initial_music_station_choices else default_music_station_name
     with gr.Blocks() as demo:
         mode = gr.Radio(
             choices=["webcam", "local", "stream"],
@@ -643,9 +899,9 @@ def main():
             webcam_output = gr.Image(streaming=True, label="Processed stream")
 
         with gr.Column(visible=True) as source_output_col:
-            source_output = gr.Image(label="Processed stream")
-            source_input = gr.Image(label="Input stream")
-            source_status = gr.Textbox(label="Source status", value="idle")
+            source_output = gr.Image(label="Processed stream", value=_placeholder_rgb("Processed: initializing"))
+            source_input = gr.Image(label="Input stream", value=_placeholder_rgb("Input: initializing"))
+            source_status = gr.Textbox(label="Source status", value="initializing")
 
         source_timer = gr.Timer(value=0.04, active=True)
 
@@ -710,12 +966,115 @@ def main():
                 overlay_on_btn = gr.Button("Overlay On")
                 overlay_off_btn = gr.Button("Overlay Off")
 
+            with gr.Row():
+                musicgen_radio_url = gr.Textbox(
+                    label="MusicGen Radio URL",
+                    value=music_station_map.get(default_music_choice, default_music_radio_url),
+                    lines=1,
+                    scale=3,
+                )
+                musicgen_base_prompt = gr.Textbox(
+                    label="Music Prompt",
+                    value="experimental electronic sound art for an internet installation",
+                    lines=1,
+                    scale=3,
+                )
+            with gr.Row():
+                music_station_choice = gr.Dropdown(
+                    label="Music Station",
+                    choices=initial_music_station_choices,
+                    value=default_music_choice,
+                    allow_custom_value=False,
+                    filterable=True,
+                    interactive=True,
+                )
+                load_music_catalog_btn = gr.Button("Load Music Stations")
+                use_music_station_btn = gr.Button("Use Selected Station")
+            with gr.Accordion("Paste Music Station M3U", open=False):
+                music_station_m3u = gr.Textbox(
+                    label="Music M3U Catalog",
+                    lines=8,
+                    value="#EXTM3U\n#EXTINF:-1,internet-radio.com station\nhttp://uk2.internet-radio.com:8024/",
+                    placeholder="#EXTM3U\n#EXTINF:-1,Station Name\nhttps://example.com/radio",
+                )
+            with gr.Row():
+                musicgen_sample_seconds = gr.Slider(
+                    label="Sample Seconds",
+                    minimum=6,
+                    maximum=30,
+                    value=6,
+                    step=1,
+                )
+                musicgen_gen_seconds = gr.Slider(
+                    label="Gen Seconds",
+                    minimum=6,
+                    maximum=30,
+                    value=6,
+                    step=1,
+                )
+                musicgen_stream_delay = gr.Slider(
+                    label="Stream Delay Seconds",
+                    minimum=2,
+                    maximum=60,
+                    value=16,
+                    step=1,
+                )
+                musicgen_crossfade_seconds = gr.Slider(
+                    label="Crossfade Seconds",
+                    minimum=0,
+                    maximum=4,
+                    value=1.5,
+                    step=0.1,
+                )
+            with gr.Row():
+                musicgen_start_btn = gr.Button("Start Music Stream")
+                musicgen_stop_btn = gr.Button("Stop Music Stream")
+                fanout_music_btn = gr.Button("Start Twitch Fanout With Music")
+
+            with gr.Row():
+                fanout_enable_youtube = gr.Checkbox(value=False, label="Fanout YouTube")
+                fanout_enable_twitch = gr.Checkbox(value=True, label="Fanout Twitch")
+                fanout_enable_facebook = gr.Checkbox(value=False, label="Fanout Facebook")
+
+            musicgen_status = gr.Textbox(label="MusicGen Status", value="idle", lines=3)
+            with gr.Row():
+                musicgen_audio_now = gr.Audio(
+                    label="Now Playing Feed",
+                    type="filepath",
+                    interactive=False,
+                )
+                musicgen_audio_edit = gr.Audio(
+                    label="Editing / Next Feed",
+                    type="filepath",
+                    interactive=False,
+                )
+            with gr.Row():
+                musicgen_now_status = gr.Textbox(
+                    label="Now Feed Status",
+                    value="now feed: idle",
+                    lines=1,
+                )
+                musicgen_edit_status = gr.Textbox(
+                    label="Edit Feed Status",
+                    value="edit feed: idle",
+                    lines=1,
+                )
+
+            musicgen_audio_preview = gr.Audio(
+                label="Latest Clip (Fallback)",
+                type="filepath",
+                interactive=False,
+                visible=False,
+            )
+
             ref_image_input = gr.Image(
                 label="Reference Image",
                 type="numpy",
                 sources=["upload"],
                 image_mode="RGB",
             )
+
+        musicgen_timer = gr.Timer(value=2.0, active=True)
 
         mode.change(
             switch_mode,
@@ -794,6 +1153,59 @@ def main():
         filter_toggle.change(set_filter_enabled, inputs=filter_toggle, outputs=None)
         overlay_on_btn.click(lambda: set_overlay_enabled(True), outputs=None)
         overlay_off_btn.click(lambda: set_overlay_enabled(False), outputs=None)
+
+        musicgen_start_btn.click(
+            start_musicgen_stream,
+            inputs=[
+                musicgen_radio_url,
+                musicgen_base_prompt,
+                musicgen_sample_seconds,
+                musicgen_gen_seconds,
+                musicgen_stream_delay,
+                musicgen_crossfade_seconds,
+            ],
+            outputs=[musicgen_status],
+        )
+
+        musicgen_stop_btn.click(
+            stop_musicgen_stream,
+            outputs=[musicgen_status],
+        )
+
+        fanout_music_btn.click(
+            start_fanout_with_music,
+            inputs=[fanout_enable_youtube, fanout_enable_twitch, fanout_enable_facebook],
+            outputs=[musicgen_status],
+        )
+
+        load_music_catalog_btn.click(
+            load_music_station_catalog,
+            inputs=[music_station_m3u],
+            outputs=[music_station_choice, musicgen_radio_url],
+        )
+
+        music_station_m3u.change(
+            load_music_station_catalog,
+            inputs=[music_station_m3u],
+            outputs=[music_station_choice, musicgen_radio_url],
+        )
+
+        use_music_station_btn.click(
+            apply_music_station_choice,
+            inputs=[music_station_choice],
+            outputs=[musicgen_radio_url],
+        )
+
+        music_station_choice.change(
+            apply_music_station_choice,
+            inputs=[music_station_choice],
+            outputs=[musicgen_radio_url],
+        )
+
+        musicgen_timer.tick(
+            poll_musicgen_preview,
+            outputs=[musicgen_audio_now, musicgen_audio_edit, musicgen_now_status, musicgen_edit_status],
+        )
 
         ref_image_input.change(
             set_reference_image_ui,

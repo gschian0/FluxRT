@@ -21,9 +21,13 @@ source .venv/bin/activate
 LOG_FILE="${MUSICGEN_LOG_FILE:-/tmp/fluxrt-musicgen-radio.log}"
 OUTPUT_DIR="${MUSICGEN_OUTPUT_DIR:-$REPO_ROOT/musicgen_output_plus_musicGEN}"
 MODEL_ID="${MUSICGEN_MODEL:-facebook/musicgen-small}"
-SAMPLE_SECONDS="${MUSICGEN_SAMPLE_SECONDS:-12}"
-GEN_SECONDS="${MUSICGEN_GEN_SECONDS:-12}"
-PAUSE_SECONDS="${MUSICGEN_PAUSE_SECONDS:-1}"
+SAMPLE_SECONDS="${MUSICGEN_SAMPLE_SECONDS:-6}"
+GEN_SECONDS="${MUSICGEN_GEN_SECONDS:-6}"
+PAUSE_SECONDS="${MUSICGEN_PAUSE_SECONDS:-0}"
+BASE_PROMPT="${MUSICGEN_BASE_PROMPT:-experimental electronic sound art for an internet installation}"
+STREAM_DELAY_SECONDS="${MUSICGEN_STREAM_DELAY_SECONDS:-16}"
+AUDIO_UDP_URL="${MUSICGEN_AUDIO_UDP_URL:-udp://127.0.0.1:5002?pkt_size=1316}"
+CROSSFADE_SECONDS="${MUSICGEN_CROSSFADE_SECONDS:-1.5}"
 
 pkill -f 'scripts/run_musicgen_radio_plus_musicGEN.py' || true
 
@@ -34,6 +38,10 @@ nohup python -u scripts/run_musicgen_radio_plus_musicGEN.py \
   --sample-seconds "$SAMPLE_SECONDS" \
   --gen-seconds "$GEN_SECONDS" \
   --pause-seconds "$PAUSE_SECONDS" \
+  --base-prompt "$BASE_PROMPT" \
+  --stream-delay-seconds "$STREAM_DELAY_SECONDS" \
+  --audio-udp-url "$AUDIO_UDP_URL" \
+  --crossfade-seconds "$CROSSFADE_SECONDS" \
   > "$LOG_FILE" 2>&1 &
 
 echo "MUSICGEN_RADIO_PID=$!"

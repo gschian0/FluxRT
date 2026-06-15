@@ -1,4 +1,3 @@
-audiocraft
 librosa
 soundfile
 numpy

@@ -1,0 +1,12 @@
+{
+  "index": 18,
+  "prompt": "experimental electronic sound art for an internet installation, energetic dynamics, bright timbre, around 129 bpm, evolving instrumental texture, no vocals",
+  "descriptors": {
+    "tempo": 129.31034482758622,
+    "rms": 0.09105923026800156,
+    "centroid": 1881.0749298978226
+  },
+  "model": "facebook/musicgen-small",
+  "sample_seconds": 8,
+  "gen_seconds": 8
+}
