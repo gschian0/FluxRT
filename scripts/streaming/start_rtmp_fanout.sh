@@ -12,19 +12,21 @@ ENV_FILE="${1:-scripts/streaming/rtmp_targets.env}"
 INPUT_URL="${INPUT_URL:-udp://127.0.0.1:5000?pkt_size=1316}"
 LOG_FILE="${LOG_FILE:-/tmp/fluxrt-rtmp-fanout.log}"
 PID_FILE="${PID_FILE:-/tmp/fluxrt-rtmp-fanout.pid}"
-VIDEO_BITRATE="${VIDEO_BITRATE:-2200k}"
+VIDEO_BITRATE="${VIDEO_BITRATE:-700k}"
 AUDIO_BITRATE="${AUDIO_BITRATE:-128k}"
-FPS="${FPS:-12}"
+FPS="${FPS:-8}"
 # Keep keyframe interval at ~2s by default for ingest compatibility.
 GOP="${GOP:-$((FPS * 2))}"
-OUTPUT_WIDTH="${OUTPUT_WIDTH:-426}"
-OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-240}"
+OUTPUT_WIDTH="${OUTPUT_WIDTH:-320}"
+OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-180}"
 VIDEO_MAXRATE="${VIDEO_MAXRATE:-${VIDEO_BITRATE}}"
-VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-1800k}"
+VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-1200k}"
 X264_PRESET="${X264_PRESET:-ultrafast}"
 ENABLE_YOUTUBE="${ENABLE_YOUTUBE:-1}"
 ENABLE_TWITCH="${ENABLE_TWITCH:-1}"
 ENABLE_FACEBOOK="${ENABLE_FACEBOOK:-1}"
+AUDIO_SOURCE_MODE="${AUDIO_SOURCE_MODE:-silent}"
+AUDIO_INPUT_URL="${AUDIO_INPUT_URL:-udp://127.0.0.1:5002?pkt_size=1316}"
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "ffmpeg is required but not installed."
@@ -59,12 +61,24 @@ fi
 
 TEE_OUTPUT="$(IFS='|'; echo "${TARGETS[*]}")"
 
+if [[ "$AUDIO_SOURCE_MODE" == "url" ]]; then
+  AUDIO_INPUT_ARGS=(
+    -thread_queue_size 4096
+    -i "$AUDIO_INPUT_URL"
+  )
+else
+  AUDIO_INPUT_ARGS=(
+    -f lavfi
+    -i anullsrc=channel_layout=stereo:sample_rate=48000
+  )
+fi
+
 nohup ffmpeg -hide_banner -loglevel info \
   -fflags +genpts+discardcorrupt \
-  -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
   -thread_queue_size 4096 \
   -i "$INPUT_URL" \
-  -map 1:v:0 -map 0:a:0 \
+  "${AUDIO_INPUT_ARGS[@]}" \
+  -map 0:v:0 -map 1:a:0 \
   -vf "scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}" \
   -r "$FPS" -fps_mode cfr \
   -c:v libx264 -preset "$X264_PRESET" -tune zerolatency -pix_fmt yuv420p \
