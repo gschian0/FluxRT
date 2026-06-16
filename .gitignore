@@ -222,3 +222,7 @@ __marimo__/
 
 # Local RTMP target secrets
 scripts/streaming/rtmp_targets.env
+
+# Local backups and generated MusicGen artifacts — kept locally, not in Git
+backups/**/*.tgz
+musicgen_output_plus_musicGEN/

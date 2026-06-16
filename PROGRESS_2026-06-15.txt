@@ -1,0 +1,137 @@
+FluxRT progress log - 2026-06-15
+
+User priority:
+- Fix live music/audio stream reliability first.
+- Keep a plain text progress handoff in repo.
+
+What was fixed right now:
+1) Root cause identified:
+- RTMP fanout had bind conflicts on UDP input port 5000 due to stale process overlap.
+- Fanout kept crashing/restarting, so audio was not making it through reliably.
+
+2) Recovery performed:
+- Stopped fanout watchdog and fanout.
+- Cleared stale fanout ffmpeg process conflict.
+- Kept MusicGen producer running.
+- Restarted fanout explicitly in music mode:
+  AUDIO_SOURCE_MODE=url
+  AUDIO_INPUT_URL=udp://127.0.0.1:5002?pkt_size=1316
+  ENABLE_TWITCH=1, ENABLE_YOUTUBE=0, ENABLE_FACEBOOK=0
+- Restarted watchdog.
+
+3) Current runtime state:
+- MusicGen is generating clips continuously.
+- Fanout process is running and encoding at target low-load profile (~6 fps).
+- Watchdog is running to auto-recover fanout if it exits.
+
+Recent code changes (already applied):
+- scripts/streaming/start_rtmp_fanout.sh
+  - hardened UDP buffering and nonfatal overrun
+  - larger queue sizes and safer mux options
+  - async audio resampling filter for continuity
+  - lower encode profile for realtime stability
+- scripts/streaming/start_rtmp_fanout_watchdog.sh (new)
+- scripts/streaming/stop_rtmp_fanout_watchdog.sh (new)
+- scripts/run_musicgen_radio_plus_musicGEN.py
+  - added generation controls: --top-k, --temperature
+  - logged generation parameters and saved to per-clip metadata JSON
+- scripts/start_musicgen_radio_plus_musicGEN.sh
+  - added env passthrough MUSICGEN_TOP_K, MUSICGEN_TEMPERATURE
+- scripts/run_gradio_stream_demo.py
+  - explicit defaults set for top-k and temperature when starting MusicGen
+
+Operational commands to use now:
+
+Start MusicGen:
+RADIO_URL='http://uk2.internet-radio.com:8024/' \
+MUSICGEN_STREAM_DELAY_SECONDS=8 \
+MUSICGEN_TOP_K=250 \
+MUSICGEN_TEMPERATURE=1.0 \
+scripts/start_musicgen_radio_plus_musicGEN.sh
+
+Start fanout with MusicGen audio:
+AUDIO_SOURCE_MODE=url \
+AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316' \
+ENABLE_YOUTUBE=0 ENABLE_TWITCH=1 ENABLE_FACEBOOK=0 \
+scripts/streaming/start_rtmp_fanout.sh
+
+Start watchdog:
+scripts/streaming/start_rtmp_fanout_watchdog.sh
+
+Quick health checks:
+- tail -n 120 /tmp/fluxrt-musicgen-radio.log
+- tail -n 120 /tmp/fluxrt-rtmp-fanout.log
+- ps -ef | rg 'run_musicgen_radio_plus_musicGEN.py|fluxrt-rtmp-fanout|fanout-watchdog'
+
+Notes:
+- This is tuned for continuity-first (lower visual quality to prevent dropouts).
+- If audio drops again, first check for port 5000 bind conflicts before changing model settings.
+
+---
+
+Full restart validation (latest):
+
+- Restart sequence completed for MusicGen + fanout + watchdog.
+- MusicGen started with:
+  - sample_seconds=8
+  - gen_seconds=12
+  - stream_delay_seconds=20
+  - crossfade_seconds=1.5
+  - bootstrap_clips=10
+- Startup log confirms bootstrap preloading:
+  - loaded 10 bootstrap clips (~65s)
+  - bootstrap buffer ready
+- New clips are being generated and written after restart.
+- Underrun observed once during early transition, then recovered.
+- Fanout process is up in Twitch-only mode with MusicGen audio input on UDP 5002.
+
+Deferred (pinned for later):
+
+- Optional browser-mic hack for Gradio input:
+  - Create a virtual audio input device on the client machine.
+  - Route internet radio audio into that virtual input.
+  - Select the virtual device as browser microphone in Gradio "mic" mode.
+- Decision: postponed for now; keep server-side UDP MusicGen path as primary runtime path.
+
+---
+
+Rollback / restore notes (current no-bars test profile):
+
+Goal:
+- direct live AI video + music audio to Twitch (no color bars)
+
+Current fanout launch profile:
+- AUDIO_SOURCE_MODE=url
+- AUDIO_INPUT_URL=udp://127.0.0.1:5002?pkt_size=1316
+- STARTUP_BARS_SECONDS=0
+- WAIT_FOR_VIDEO_READY=0
+
+Known-good startup order:
+1) Start Gradio stream demo first (ensures UDP 5000 video producer exists)
+2) Start MusicGen
+3) Start fanout
+4) Start watchdog
+
+Commands:
+
+APP_HOST=0.0.0.0 APP_PORT=7861 ./scripts/start_gradio_stream_demo.sh
+
+RADIO_URL='http://uk2.internet-radio.com:8024/' MUSICGEN_PARALLEL_CLIPS=2 scripts/start_musicgen_radio_plus_musicGEN.sh
+
+AUDIO_SOURCE_MODE=url AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316' ENABLE_YOUTUBE=0 ENABLE_TWITCH=1 ENABLE_FACEBOOK=0 STARTUP_BARS_SECONDS=0 WAIT_FOR_VIDEO_READY=0 ./scripts/streaming/start_rtmp_fanout.sh
+
+./scripts/streaming/start_rtmp_fanout_watchdog.sh
+
+Quick reset (if rogue fanout reappears):
+
+./scripts/streaming/stop_rtmp_fanout_watchdog.sh || true
+./scripts/streaming/stop_rtmp_fanout.sh || true
+pkill -9 -f 'start_rtmp_fanout' || true
+pkill -9 -f 'ffmpeg.*rtmp://live.twitch.tv' || true
+
+---
+
+Pinned for tomorrow:
+- Revisit the "processed warming up" stall in scripts/run_gradio_stream_demo.py.
+- Restore a better recovery strategy only after confirming the underlying worker/output state.
+- Keep the current stop/start fanout cleanup changes; do not undo them.

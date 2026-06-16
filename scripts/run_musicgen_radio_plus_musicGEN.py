@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import queue
+import random
 import subprocess
 import tempfile
 import threading
@@ -153,6 +154,28 @@ def _write_marker(path: Path, value: str) -> None:
     path.write_text(value, encoding="utf-8")
 
 
+def _load_bootstrap_clips(out_dir: Path, max_clips: int, sample_rate: int, sf_module) -> list[np.ndarray]:
+    if max_clips <= 0:
+        return []
+
+    candidates = sorted(out_dir.glob("musicgen_clip_*.wav"))[-max_clips:]
+    clips: list[np.ndarray] = []
+    for wav_path in candidates:
+        try:
+            arr, sr = sf_module.read(str(wav_path), dtype="float32", always_2d=False)
+        except Exception:
+            continue
+        if int(sr) != int(sample_rate):
+            continue
+        if isinstance(arr, np.ndarray) and arr.ndim == 2:
+            arr = arr.mean(axis=1)
+        arr = np.asarray(arr, dtype=np.float32).reshape(-1)
+        if arr.size < int(0.5 * sample_rate):
+            continue
+        clips.append(np.clip(arr, -0.98, 0.98))
+    return clips
+
+
 def _playback_worker(
     audio_queue: "queue.Queue[tuple[int, np.ndarray] | None]",
     sample_rate: int,
@@ -161,6 +184,7 @@ def _playback_worker(
     udp_proc,
     now_marker_path: Path,
     out_dir: Path,
+    bootstrap_clips: list[np.ndarray] | None = None,
 ):
     started = False
     buffered_seconds = 0.0
@@ -172,6 +196,14 @@ def _playback_worker(
     loop_source = np.zeros((0,), dtype=np.float32)
     loop_cursor = 0
     underrun_announced = False
+
+    if bootstrap_clips:
+        for boot_clip in bootstrap_clips:
+            buffer.append((-1, boot_clip))
+            buffered_seconds += boot_clip.shape[0] / sample_rate
+        print(
+            f"[musicgen] loaded {len(bootstrap_clips)} bootstrap clips ({buffered_seconds:.1f}s)"
+        )
 
     def _stream_array(arr: np.ndarray):
         if arr is None or arr.size == 0:
@@ -200,12 +232,12 @@ def _playback_worker(
         if arr is None or arr.size == 0:
             return
         arr = np.asarray(arr, dtype=np.float32).reshape(-1)
-        # Keep a rolling 60s memory window for seamless fallback looping.
+        # Keep a rolling 3-minute memory window for seamless fallback looping.
         if loop_source.size == 0:
             loop_source = arr.copy()
         else:
             loop_source = np.concatenate([loop_source, arr])
-        max_len = int(sample_rate * 60)
+        max_len = int(sample_rate * 180)
         if loop_source.size > max_len:
             loop_source = loop_source[-max_len:]
         if loop_cursor >= loop_source.size:
@@ -229,7 +261,8 @@ def _playback_worker(
 
     def _stream_clip(index: int, clip: np.ndarray):
         nonlocal pending_tail
-        _write_marker(now_marker_path, str(out_dir / f"musicgen_clip_{index:06d}.wav"))
+        if index >= 0:
+            _write_marker(now_marker_path, str(out_dir / f"musicgen_clip_{index:06d}.wav"))
         _remember_for_loop(clip)
 
         if fade_samples <= 0 or clip.shape[0] <= fade_samples * 2:
@@ -253,6 +286,19 @@ def _playback_worker(
         _stream_array(mixed)
         _stream_array(middle)
         pending_tail = tail
+
+    # Pre-seed fallback loop memory from bootstrap content so startup buffering
+    # can still output continuous non-silent program audio.
+    if bootstrap_clips:
+        for boot_clip in bootstrap_clips:
+            _remember_for_loop(boot_clip)
+
+    if buffered_seconds >= delay_seconds and len(buffer) > 0:
+        print(f"[musicgen] bootstrap buffer ready: {buffered_seconds:.1f}s")
+        for q_index, queued_clip in buffer:
+            _stream_clip(q_index, queued_clip)
+        buffer = []
+        started = True
 
     while True:
         try:
@@ -282,8 +328,12 @@ def _playback_worker(
         if not started:
             buffer.append((index, clip))
             buffered_seconds += clip_seconds
-            # Keep a valid audio track alive while we build the backing-track buffer.
-            _stream_silence(clip_seconds)
+            # Keep a valid track alive while building buffer: prefer recent looped
+            # program audio over silence when available.
+            if loop_source.size > 0:
+                _stream_array(_next_loop_chunk(int(clip_seconds * sample_rate)))
+            else:
+                _stream_silence(clip_seconds)
             print(
                 f"[musicgen] buffering backing track {buffered_seconds:.1f}/{delay_seconds:.1f}s"
             )
@@ -320,6 +370,36 @@ def main() -> None:
     parser.add_argument("--model", default="facebook/musicgen-small", help="HuggingFace model ID")
     parser.add_argument("--sample-seconds", type=int, default=8, help="Seconds to sample from radio")
     parser.add_argument("--gen-seconds", type=int, default=8, help="Seconds to generate per clip")
+    parser.add_argument(
+        "--parallel-clips",
+        type=int,
+        default=2,
+        help="Number of clips to generate in parallel from one sampled radio context",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=-1,
+        help="Base random seed (negative value uses time-based seed)",
+    )
+    parser.add_argument(
+        "--bootstrap-clips",
+        type=int,
+        default=10,
+        help="Number of previous generated clips to preload as intro while new clips buffer",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=250,
+        help="Top-k sampling cutoff (Audiocraft demo-style control)",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature (Audiocraft demo-style control)",
+    )
     parser.add_argument("--sample-rate", type=int, default=32000, help="Audio sample rate")
     parser.add_argument("--pause-seconds", type=float, default=0.0, help="Pause between loops")
     parser.add_argument(
@@ -366,6 +446,13 @@ def main() -> None:
 
     # MusicGen uses approximately 50 audio tokens per second.
     max_new_tokens = max(64, int(args.gen_seconds * 50))
+    top_k = max(0, int(args.top_k))
+    temperature = max(0.1, float(args.temperature))
+    parallel_clips = max(1, int(args.parallel_clips))
+    seed_base = int(args.seed)
+    if seed_base < 0:
+        seed_base = int(time.time() * 1000) % (2**31 - 1)
+    random.seed(seed_base)
 
     sample_rate = int(model.config.audio_encoder.sampling_rate)
     audio_queue: "queue.Queue[tuple[int, np.ndarray] | None]" | None = None
@@ -375,6 +462,12 @@ def main() -> None:
     if args.audio_udp_url.strip():
         audio_queue = queue.Queue(maxsize=32)
         udp_proc = _start_audio_udp_encoder(sample_rate, args.audio_udp_url.strip())
+        bootstrap_clips = _load_bootstrap_clips(
+            out_dir=out_dir,
+            max_clips=max(0, int(args.bootstrap_clips)),
+            sample_rate=sample_rate,
+            sf_module=sf,
+        )
         playback_thread = threading.Thread(
             target=_playback_worker,
             args=(
@@ -385,13 +478,21 @@ def main() -> None:
                 udp_proc,
                 now_marker_path,
                 out_dir,
+                bootstrap_clips,
             ),
             daemon=True,
         )
         playback_thread.start()
-        print(f"[musicgen] audio stream -> {args.audio_udp_url} (delay={args.stream_delay_seconds}s)")
+        print(
+            f"[musicgen] audio stream -> {args.audio_udp_url} "
+            f"(delay={args.stream_delay_seconds}s, bootstrap_clips={len(bootstrap_clips)})"
+        )
 
-    print(f"[musicgen] device={device} model={args.model} out={out_dir}")
+    print(
+        f"[musicgen] device={device} model={args.model} out={out_dir} "
+        f"gen(top_k={top_k}, temperature={temperature}, guidance_scale=3.0, "
+        f"parallel_clips={parallel_clips}, seed={seed_base})"
+    )
     resolved_radio_url = _resolve_playlist_stream_url(args.radio_url)
     if resolved_radio_url != args.radio_url:
         print(f"[musicgen] resolved playlist URL -> {resolved_radio_url}")
@@ -404,62 +505,78 @@ def main() -> None:
             descriptors = _extract_descriptors(radio_wav)
             prompt = _build_prompt(descriptors, args.base_prompt)
 
-            inputs = processor(text=[prompt], padding=True, return_tensors="pt")
+            batch_prompts = [prompt for _ in range(parallel_clips)]
+            inputs = processor(text=batch_prompts, padding=True, return_tensors="pt")
             inputs = {k: v.to(device) for k, v in inputs.items()}
+            loop_seed = (seed_base + index) % (2**31 - 1)
             with torch.no_grad():
                 if device == "cuda":
                     with torch.autocast(device_type="cuda", dtype=torch.float16):
                         generated = model.generate(
                             **inputs,
                             do_sample=True,
+                            top_k=top_k,
+                            temperature=temperature,
                             guidance_scale=3.0,
                             max_new_tokens=max_new_tokens,
+                            
                         )
                 else:
                     generated = model.generate(
                         **inputs,
                         do_sample=True,
+                        top_k=top_k,
+                        temperature=temperature,
                         guidance_scale=3.0,
                         max_new_tokens=max_new_tokens,
+                        
                     )
 
-            audio = generated[0].detach().cpu().numpy()
-            # transformers MusicGen returns (channels, samples); soundfile expects (samples, channels).
-            if audio.ndim == 2 and audio.shape[0] <= 8:
-                audio = audio.T
-            if audio.ndim == 1:
-                audio = np.expand_dims(audio, axis=1)
-            audio = audio.astype(np.float32, copy=False)
+            batch_size = int(generated.shape[0]) if hasattr(generated, "shape") else parallel_clips
+            for batch_pos in range(batch_size):
+                audio = generated[batch_pos].detach().cpu().numpy()
+                # transformers MusicGen returns (channels, samples); soundfile expects (samples, channels).
+                if audio.ndim == 2 and audio.shape[0] <= 8:
+                    audio = audio.T
+                if audio.ndim == 1:
+                    audio = np.expand_dims(audio, axis=1)
+                audio = audio.astype(np.float32, copy=False)
 
-            clip_name = f"musicgen_clip_{index:06d}.wav"
-            meta_name = f"musicgen_clip_{index:06d}.json"
-            clip_path = out_dir / clip_name
-            meta_path = out_dir / meta_name
+                clip_name = f"musicgen_clip_{index:06d}.wav"
+                meta_name = f"musicgen_clip_{index:06d}.json"
+                clip_path = out_dir / clip_name
+                meta_path = out_dir / meta_name
 
-            sf.write(str(clip_path), audio, sample_rate)
-            _write_marker(edit_marker_path, str(clip_path))
-            if index == 0:
-                _write_marker(now_marker_path, str(clip_path))
+                sf.write(str(clip_path), audio, sample_rate)
+                _write_marker(edit_marker_path, str(clip_path))
+                if index == 0:
+                    _write_marker(now_marker_path, str(clip_path))
 
-            mono_audio = audio.mean(axis=1) if audio.ndim == 2 else audio.squeeze()
-            if mono_audio.ndim == 0:
-                mono_audio = np.array([float(mono_audio)], dtype=np.float32)
-            mono_audio = mono_audio.astype(np.float32, copy=False)
-            if audio_queue is not None:
-                audio_queue.put((index, np.clip(mono_audio, -0.98, 0.98)))
-            meta = {
-                "index": index,
-                "prompt": prompt,
-                "descriptors": descriptors,
-                "model": args.model,
-                "sample_seconds": args.sample_seconds,
-                "gen_seconds": args.gen_seconds,
-            }
-            meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+                mono_audio = audio.mean(axis=1) if audio.ndim == 2 else audio.squeeze()
+                if mono_audio.ndim == 0:
+                    mono_audio = np.array([float(mono_audio)], dtype=np.float32)
+                mono_audio = mono_audio.astype(np.float32, copy=False)
+                if audio_queue is not None:
+                    audio_queue.put((index, np.clip(mono_audio, -0.98, 0.98)))
+                meta = {
+                    "index": index,
+                    "batch_pos": batch_pos,
+                    "parallel_clips": parallel_clips,
+                    "seed": loop_seed,
+                    "prompt": prompt,
+                    "descriptors": descriptors,
+                    "model": args.model,
+                    "sample_seconds": args.sample_seconds,
+                    "gen_seconds": args.gen_seconds,
+                    "top_k": top_k,
+                    "temperature": temperature,
+                    "guidance_scale": 3.0,
+                }
+                meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-            print(f"[musicgen] wrote {clip_path}")
+                print(f"[musicgen] wrote {clip_path}")
+                index += 1
 
-        index += 1
         time.sleep(max(0.0, args.pause_seconds))
 
     if audio_queue is not None:
