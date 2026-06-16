@@ -218,6 +218,10 @@ cython_debug/
 # Marimo
 marimo/_static/
 marimo/_lsp/
+
+# Magpie TTS runtime artifacts
+voices/
+magpie_tts-*.wav
 __marimo__/
 
 # Local RTMP target secrets
@@ -226,3 +230,4 @@ scripts/streaming/rtmp_targets.env
 # Local backups and generated MusicGen artifacts — kept locally, not in Git
 backups/**/*.tgz
 musicgen_output_plus_musicGEN/
+voices/

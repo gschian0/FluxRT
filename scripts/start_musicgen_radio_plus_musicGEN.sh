@@ -25,6 +25,8 @@ SAMPLE_SECONDS="${MUSICGEN_SAMPLE_SECONDS:-12}"
 GEN_SECONDS="${MUSICGEN_GEN_SECONDS:-12}"
 TOP_K="${MUSICGEN_TOP_K:-250}"
 TEMPERATURE="${MUSICGEN_TEMPERATURE:-1.0}"
+TOP_P="${MUSICGEN_TOP_P:-0.95}"
+GUIDANCE_SCALE="${MUSICGEN_GUIDANCE_SCALE:-3.0}"
 PARALLEL_CLIPS="${MUSICGEN_PARALLEL_CLIPS:-2}"
 SEED="${MUSICGEN_SEED:--1}"
 PAUSE_SECONDS="${MUSICGEN_PAUSE_SECONDS:-0}"
@@ -43,7 +45,9 @@ nohup python -u scripts/run_musicgen_radio_plus_musicGEN.py \
   --sample-seconds "$SAMPLE_SECONDS" \
   --gen-seconds "$GEN_SECONDS" \
   --top-k "$TOP_K" \
+  --top-p "$TOP_P" \
   --temperature "$TEMPERATURE" \
+  --guidance-scale "$GUIDANCE_SCALE" \
   --parallel-clips "$PARALLEL_CLIPS" \
   --seed "$SEED" \
   --bootstrap-clips "$BOOTSTRAP_CLIPS" \

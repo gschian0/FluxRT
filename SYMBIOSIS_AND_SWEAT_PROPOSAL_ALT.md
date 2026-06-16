@@ -7,10 +7,11 @@ This project treats live internet television and internet radio as a real-time m
 
 The work is about the tension between independent authorship and corporate systems. The cloud provides the L4 GPUs, orchestration, and scale that make the broadcast possible, but the operator still pays for that convenience with physical effort, constant attention, and ongoing maintenance. The piece makes that labor visible and frames ephemeral media as something that is lived, not archived.
 
-## II. Apparatus
-The technical stack embraces AI generation, live processing, and cloud orchestration as one continuous pipeline. The project depends on modern efficiency, but does not pretend that efficiency removes labor.
+## II. The Apparatus: Rejecting the Upgrade Cycle
+The technical foundation of this work embraces the architecture of cloud infrastructure while actively subverting its economic demands. By combining AI generation, live processing, and cloud-based orchestration into a single pipeline written across C++, Rust, and Python, the project relies on extreme optimization rather than brute force compute.
 
-A single L4 GPU is enough to run the core broadcast. As the industry pushes toward lower-bit model formats like FP4 and 1.5-bit processing, this project uses that same optimization logic to power a live media system rather than a private benchmark. The machine is managed and polished; the work of steering it is not.
+The industry is currently pushing a forced hardware upgrade cycle, demanding massive, overpriced clusters to run heavily degraded 1.5-bit and 4-bit (FP4) models. This project rejects that artificial scarcity. Instead, operating through Schiano Research, the live pipeline proves that high-fidelity 8-bit quantization deployed on accessible, cheaper GPUs is not only sufficient, but superior for independent operations. It demonstrates that artists do not need to pay for brand-new, top-tier systems to achieve real-time generative capabilities. A single, cost-effective L4 GPU running highly optimized 8-bit models via OpenVINO is more than enough to drive a global, real-time broadcast. The architecture is lean and intentionally economical, a stark contrast to the human effort required to steer it.
+
 
 ## III. Labor
 The central tension is between algorithmic abundance and human endurance. To operate the system is to constantly shape image, audio, and generation in motion.

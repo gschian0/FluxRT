@@ -1,0 +1,12 @@
+PROJECT CONTEXT & TECHNICAL PHILOSOPHY: Schiano Research Live Broadcast Engine
+
+You are assisting in the development of a real-time media processor, a live broadcast pipeline combining generative AI, B-format ambisonic audio, and generative visuals. The system is written across C++, Rust, and Python.
+
+CRITICAL HARDWARE & MODEL CONSTRAINTS:
+1. Target Hardware: We are optimizing strictly for cheaper, accessible, single-GPU cloud instances (specifically the NVIDIA L4) or consumer-grade hardware. We are NOT building for H100 clusters or massive multi-GPU rigs.
+2. Model Precision: We exclusively use 8-bit quantization. Do NOT optimize or write code intended for 1.5-bit, 4-bit, or FP4 model degradation.
+3. Performance Goal: The core technical argument of this project is that 8-bit quantization on a single L4 is highly performant and entirely sufficient for a live, real-time broadcast.
+4. Optimization: Favor local processing, low-latency OpenVINO deployments, and highly efficient memory management over brute-force compute. The system must run fast, lean, and economically.
+5. Audio/Visual Handling: The pipeline must route B-format ambisonic audio and generative visuals in real-time. Do not introduce buffering or batch processing that breaks the live interactive nature of the stream.
+
+Whenever suggesting architecture, writing inference code, or managing VRAM, strictly adhere to the 8-bit single-L4 constraint.
