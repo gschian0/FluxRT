@@ -15,7 +15,7 @@ from fluxrt.utils import crop_maximal_rectangle
 
 default_prompt = "claymation"
 default_stream_url = "https://30a-tv.com/feeds/masters/30atv.m3u8"
-default_music_radio_url = "https://www.internet-radio.com/servers/tools/playlistgenerator/?u=http://uk7.internet-radio.com:8000/listen.pls&t=.m3u"
+default_music_radio_url = "http://uk2.internet-radio.com:8024/"
 default_music_station_name = "internet-radio.com default station"
 
 stream_processor = None
@@ -418,9 +418,14 @@ def start_musicgen_stream(
     env["MUSICGEN_BASE_PROMPT"] = (base_prompt or "experimental electronic sound art").strip()
     env["MUSICGEN_SAMPLE_SECONDS"] = str(int(sample_seconds))
     env["MUSICGEN_GEN_SECONDS"] = str(int(gen_seconds))
+    env["MUSICGEN_TOP_K"] = "250"
+    env["MUSICGEN_TEMPERATURE"] = "1.0"
+    env["MUSICGEN_PARALLEL_CLIPS"] = "2"
+    env["MUSICGEN_SEED"] = "-1"
     env["MUSICGEN_STREAM_DELAY_SECONDS"] = str(float(stream_delay_seconds))
     env["MUSICGEN_CROSSFADE_SECONDS"] = str(float(crossfade_seconds))
-    env["MUSICGEN_PAUSE_SECONDS"] = "0.1"
+    env["MUSICGEN_PAUSE_SECONDS"] = "0"
+    env["MUSICGEN_BOOTSTRAP_CLIPS"] = "24"
     env["MUSICGEN_AUDIO_UDP_URL"] = "udp://127.0.0.1:5002?pkt_size=1316"
 
     cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/start_musicgen_radio_plus_musicGEN.sh"]
@@ -454,22 +459,23 @@ def start_fanout_with_music(enable_youtube: bool, enable_twitch: bool, enable_fa
     enable_twitch_str = "1" if enable_twitch else "0"
     enable_facebook_str = "1" if enable_facebook else "0"
 
-    cmd = [
-        "bash",
-        "-lc",
+    launch_cmd = (
         "cd /home/gschi/FluxRT && "
         "scripts/streaming/stop_rtmp_fanout.sh || true; "
         f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} AUDIO_SOURCE_MODE=url "
+        "STARTUP_BARS_SECONDS=0 WAIT_FOR_VIDEO_READY=0 "
         "AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316' "
-        "scripts/streaming/start_rtmp_fanout.sh",
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        msg = (result.stderr or result.stdout or "fanout start failed").strip()
-        set_status(f"fanout start failed: {msg}")
-        return f"fanout start failed: {msg}"
-    set_status("fanout started (music+video to Twitch)")
-    return (result.stdout or "fanout started").strip()
+        "scripts/streaming/start_rtmp_fanout.sh >> /tmp/fluxrt-rtmp-fanout-launch.log 2>&1"
+    )
+    try:
+        subprocess.Popen(["bash", "-lc", launch_cmd])
+    except Exception as exc:
+        msg = str(exc)
+        set_status(f"fanout launch failed: {msg}")
+        return f"fanout launch failed: {msg}"
+
+    set_status("fanout launching in background (bars -> live handoff)")
+    return "fanout launch started in background; check /tmp/fluxrt-rtmp-fanout.log"
 
 
 def _latest_musicgen_clip() -> str | None:
@@ -1002,21 +1008,21 @@ def main():
                     label="Sample Seconds",
                     minimum=6,
                     maximum=30,
-                    value=6,
+                    value=12,
                     step=1,
                 )
                 musicgen_gen_seconds = gr.Slider(
                     label="Gen Seconds",
                     minimum=6,
                     maximum=30,
-                    value=6,
+                    value=12,
                     step=1,
                 )
                 musicgen_stream_delay = gr.Slider(
                     label="Stream Delay Seconds",
                     minimum=2,
-                    maximum=60,
-                    value=16,
+                    maximum=240,
+                    value=180,
                     step=1,
                 )
                 musicgen_crossfade_seconds = gr.Slider(
@@ -1176,6 +1182,8 @@ def main():
             start_fanout_with_music,
             inputs=[fanout_enable_youtube, fanout_enable_twitch, fanout_enable_facebook],
             outputs=[musicgen_status],
+            queue=False,
+            show_progress=False,
         )
 
         load_music_catalog_btn.click(

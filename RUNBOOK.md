@@ -316,3 +316,75 @@ Runtime output:
 
 - Log: `/tmp/fluxrt-musicgen-radio.log`
 - Generated clips: `musicgen_output_plus_musicGEN/`
+
+## MusicGen Generation Knobs (Limited, Demo-Style)
+
+To keep control simple, generation now exposes two high-impact parameters:
+
+- `MUSICGEN_TOP_K` (default `250`)
+- `MUSICGEN_TEMPERATURE` (default `1.0`)
+
+Example:
+
+```bash
+cd /home/gschi/FluxRT
+RADIO_URL='http://uk2.internet-radio.com:8024/' \
+MUSICGEN_TOP_K=250 \
+MUSICGEN_TEMPERATURE=1.0 \
+MUSICGEN_STREAM_DELAY_SECONDS=8 \
+scripts/start_musicgen_radio_plus_musicGEN.sh
+```
+
+These are applied directly in `scripts/run_musicgen_radio_plus_musicGEN.py` at `model.generate(...)`.
+
+## Fanout Hardening + Watchdog
+
+Current fanout defaults are tuned for continuity-first operation:
+
+- `VIDEO_BITRATE=450k`
+- `FPS=6`
+- `OUTPUT_WIDTH=256`
+- `OUTPUT_HEIGHT=144`
+- `VIDEO_BUFSIZE=900k`
+
+Fanout also includes hardened UDP input buffering and async audio resampling.
+
+Start watchdog:
+
+```bash
+cd /home/gschi/FluxRT
+scripts/streaming/start_rtmp_fanout_watchdog.sh
+```
+
+Stop watchdog:
+
+```bash
+cd /home/gschi/FluxRT
+scripts/streaming/stop_rtmp_fanout_watchdog.sh
+```
+
+Watchdog files:
+
+- `/tmp/fluxrt-rtmp-fanout-watchdog.pid`
+- `/tmp/fluxrt-rtmp-fanout-watchdog.log`
+
+## Backup Snapshot (Recommended Before Shutdown)
+
+Run:
+
+```bash
+cd /home/gschi/FluxRT
+chmod +x scripts/backup/create_fluxrt_snapshot.sh
+scripts/backup/create_fluxrt_snapshot.sh
+```
+
+This creates a timestamped directory under `backups/` containing:
+
+- project archive (`.tgz`)
+- `git diff` patch
+- git status snapshot
+- file list and restore notes
+
+Handoff summary document for this phase:
+
+- `BACKUP_AND_HANDOFF_2026-06-15.md`
