@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 
 import numpy as np
@@ -55,10 +56,16 @@ def _sample_radio_to_wav(radio_url: str, out_wav: str, seconds: int, sample_rate
 
 def _resolve_playlist_stream_url(radio_url: str) -> str:
     lowered = radio_url.lower()
+    parsed = urlparse(radio_url)
+    path_lower = (parsed.path or "").lower()
     looks_like_playlist = (
         "playlistgenerator" in lowered
         or lowered.endswith(".m3u")
         or lowered.endswith(".pls")
+        or path_lower.endswith(".m3u")
+        or path_lower.endswith(".pls")
+        or ".pls?" in lowered
+        or ".m3u?" in lowered
         or "t=.m3u" in lowered
     )
     if not looks_like_playlist:
@@ -400,6 +407,18 @@ def main() -> None:
         default=1.0,
         help="Sampling temperature (Audiocraft demo-style control)",
     )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        default=0.95,
+        help="Top-p (nucleus) sampling cutoff (Audiocraft demo-style control)",
+    )
+    parser.add_argument(
+        "--guidance-scale",
+        type=float,
+        default=3.0,
+        help="Classifier-free guidance scale for MusicGen generation",
+    )
     parser.add_argument("--sample-rate", type=int, default=32000, help="Audio sample rate")
     parser.add_argument("--pause-seconds", type=float, default=0.0, help="Pause between loops")
     parser.add_argument(
@@ -448,6 +467,8 @@ def main() -> None:
     max_new_tokens = max(64, int(args.gen_seconds * 50))
     top_k = max(0, int(args.top_k))
     temperature = max(0.1, float(args.temperature))
+    top_p = max(0.05, min(1.0, float(args.top_p)))
+    guidance_scale = max(1.0, float(args.guidance_scale))
     parallel_clips = max(1, int(args.parallel_clips))
     seed_base = int(args.seed)
     if seed_base < 0:
@@ -490,7 +511,7 @@ def main() -> None:
 
     print(
         f"[musicgen] device={device} model={args.model} out={out_dir} "
-        f"gen(top_k={top_k}, temperature={temperature}, guidance_scale=3.0, "
+        f"gen(top_k={top_k}, top_p={top_p}, temperature={temperature}, guidance_scale={guidance_scale}, "
         f"parallel_clips={parallel_clips}, seed={seed_base})"
     )
     resolved_radio_url = _resolve_playlist_stream_url(args.radio_url)
@@ -516,8 +537,9 @@ def main() -> None:
                             **inputs,
                             do_sample=True,
                             top_k=top_k,
+                            top_p=top_p,
                             temperature=temperature,
-                            guidance_scale=3.0,
+                            guidance_scale=guidance_scale,
                             max_new_tokens=max_new_tokens,
                             
                         )
@@ -526,8 +548,9 @@ def main() -> None:
                         **inputs,
                         do_sample=True,
                         top_k=top_k,
+                        top_p=top_p,
                         temperature=temperature,
-                        guidance_scale=3.0,
+                        guidance_scale=guidance_scale,
                         max_new_tokens=max_new_tokens,
                         
                     )
@@ -569,8 +592,9 @@ def main() -> None:
                     "sample_seconds": args.sample_seconds,
                     "gen_seconds": args.gen_seconds,
                     "top_k": top_k,
+                    "top_p": top_p,
                     "temperature": temperature,
-                    "guidance_scale": 3.0,
+                    "guidance_scale": guidance_scale,
                 }
                 meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 

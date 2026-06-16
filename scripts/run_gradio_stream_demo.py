@@ -15,8 +15,8 @@ from fluxrt.utils import crop_maximal_rectangle
 
 default_prompt = "claymation"
 default_stream_url = "https://30a-tv.com/feeds/masters/30atv.m3u8"
-default_music_radio_url = "http://uk2.internet-radio.com:8024/"
-default_music_station_name = "internet-radio.com default station"
+default_music_radio_url = "http://www.partyviberadio.com:8000/listen.pls?sid=1"
+default_music_station_name = "Party Vibe Radio"
 
 stream_processor = None
 input_tensor = None
@@ -48,9 +48,18 @@ repo_catalog_paths = {}
 
 music_station_map[default_music_station_name] = default_music_radio_url
 
+voice_choices = [
+    "Magpie-Multilingual.EN-US.Aria",
+    "Magpie-Multilingual.EN-US.Sarah",
+    "Magpie-Multilingual.EN-US.Ryan",
+]
+
 udp_writer = None
 udp_writer_lock = threading.Lock()
 udp_writer_dims = (0, 0)
+
+quote_tts_proc = None
+quote_tts_lock = threading.Lock()
 
 
 def _get_udp_writer(width, height, fps=25):
@@ -261,6 +270,14 @@ def parse_m3u_channels(m3u_text: str) -> list[tuple[str, str]]:
             channel_name = pending_name or f"Channel {len(channels) + 1}"
             channels.append((channel_name, line))
             pending_name = None
+
+    # Fallback: if pasted text is not strict M3U, extract bare URLs anyway.
+    if not channels:
+        url_matches = re.findall(r"https?://\S+", m3u_text)
+        for idx, url in enumerate(url_matches, start=1):
+            clean_url = url.strip().rstrip(",;)")
+            if clean_url:
+                channels.append((f"Channel {idx}", clean_url))
     return channels
 
 
@@ -407,6 +424,10 @@ def start_musicgen_stream(
     base_prompt: str,
     sample_seconds: int,
     gen_seconds: int,
+    top_k: int,
+    top_p: float,
+    temperature: float,
+    guidance_scale: float,
     stream_delay_seconds: float,
     crossfade_seconds: float,
 ):
@@ -418,8 +439,10 @@ def start_musicgen_stream(
     env["MUSICGEN_BASE_PROMPT"] = (base_prompt or "experimental electronic sound art").strip()
     env["MUSICGEN_SAMPLE_SECONDS"] = str(int(sample_seconds))
     env["MUSICGEN_GEN_SECONDS"] = str(int(gen_seconds))
-    env["MUSICGEN_TOP_K"] = "250"
-    env["MUSICGEN_TEMPERATURE"] = "1.0"
+    env["MUSICGEN_TOP_K"] = str(int(top_k))
+    env["MUSICGEN_TOP_P"] = str(float(top_p))
+    env["MUSICGEN_TEMPERATURE"] = str(float(temperature))
+    env["MUSICGEN_GUIDANCE_SCALE"] = str(float(guidance_scale))
     env["MUSICGEN_PARALLEL_CLIPS"] = "2"
     env["MUSICGEN_SEED"] = "-1"
     env["MUSICGEN_STREAM_DELAY_SECONDS"] = str(float(stream_delay_seconds))
@@ -445,37 +468,207 @@ def start_musicgen_stream(
 def stop_musicgen_stream():
     cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/stop_musicgen_radio_plus_musicGEN.sh"]
     result = subprocess.run(cmd, capture_output=True, text=True)
+    # Also kill any orphaned writers in case the worker was started outside this UI.
+    subprocess.run(
+        [
+            "bash",
+            "-lc",
+            "pkill -f 'run_musicgen_radio_plus_musicGEN.py' || true; "
+            "pkill -f 'ffmpeg.*udp://127.0.0.1:5002' || true",
+        ],
+        capture_output=True,
+        text=True,
+    )
     msg = (result.stdout or result.stderr or "musicgen stopped").strip()
     set_status("musicgen stream stopped")
     return msg
 
 
-def start_fanout_with_music(enable_youtube: bool, enable_twitch: bool, enable_facebook: bool):
+def start_fanout_with_music(enable_youtube: bool, enable_twitch: bool, enable_facebook: bool, enable_quote_voice: bool):
     if not (enable_youtube or enable_twitch or enable_facebook):
         set_status("fanout start skipped: no platform enabled")
         return "fanout start skipped: enable at least one platform"
 
+    env_path = os.path.join(_repo_root(), "scripts", "streaming", "rtmp_targets.env")
+    env_targets = {
+        "youtube": "",
+        "twitch": "",
+        "facebook": "",
+    }
+    try:
+        if os.path.isfile(env_path):
+            with open(env_path, "r", encoding="utf-8", errors="ignore") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    key = k.strip()
+                    value = v.strip().strip('"').strip("'")
+                    if key == "YOUTUBE_RTMP_URL":
+                        env_targets["youtube"] = value
+                    elif key == "TWITCH_RTMP_URL":
+                        env_targets["twitch"] = value
+                    elif key == "FACEBOOK_RTMP_URL":
+                        env_targets["facebook"] = value
+    except Exception:
+        pass
+
+    missing = []
+    if enable_youtube and not env_targets["youtube"]:
+        missing.append("YouTube")
+    if enable_twitch and not env_targets["twitch"]:
+        missing.append("Twitch")
+    if enable_facebook and not env_targets["facebook"]:
+        missing.append("Facebook")
+
+    if missing:
+        msg = f"fanout start blocked: missing RTMP URL for {', '.join(missing)} in scripts/streaming/rtmp_targets.env"
+        set_status(msg)
+        return msg
+
     enable_youtube_str = "1" if enable_youtube else "0"
     enable_twitch_str = "1" if enable_twitch else "0"
     enable_facebook_str = "1" if enable_facebook else "0"
+    enable_quote_voice_str = "1" if enable_quote_voice else "0"
 
     launch_cmd = (
         "cd /home/gschi/FluxRT && "
         "scripts/streaming/stop_rtmp_fanout.sh || true; "
-        f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} AUDIO_SOURCE_MODE=url "
+        f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} ENABLE_TTS_OVERLAY={enable_quote_voice_str} AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url "
         "STARTUP_BARS_SECONDS=0 WAIT_FOR_VIDEO_READY=0 "
         "AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316' "
-        "scripts/streaming/start_rtmp_fanout.sh >> /tmp/fluxrt-rtmp-fanout-launch.log 2>&1"
+        "TTS_INPUT_URL='udp://127.0.0.1:5004?pkt_size=1316' "
+        "scripts/streaming/start_rtmp_fanout.sh"
     )
     try:
-        subprocess.Popen(["bash", "-lc", launch_cmd])
+        result = subprocess.run(["bash", "-lc", launch_cmd], capture_output=True, text=True)
     except Exception as exc:
         msg = str(exc)
         set_status(f"fanout launch failed: {msg}")
         return f"fanout launch failed: {msg}"
 
-    set_status("fanout launching in background (bars -> live handoff)")
-    return "fanout launch started in background; check /tmp/fluxrt-rtmp-fanout.log"
+    if result.returncode != 0:
+        msg = (result.stderr or result.stdout or "fanout launch failed").strip()
+        set_status(f"fanout launch failed: {msg}")
+        return f"fanout launch failed: {msg}"
+
+    launch_msg = (result.stdout or "fanout launch started").strip()
+    set_status("fanout started (auto-reconnect loop)")
+    return launch_msg + (" (quote voice mix enabled)" if enable_quote_voice else "")
+
+
+def _quote_tts_is_running() -> bool:
+    with quote_tts_lock:
+        return quote_tts_proc is not None and quote_tts_proc.poll() is None
+
+
+def stop_quote_voice_stream():
+    global quote_tts_proc
+    with quote_tts_lock:
+        proc = quote_tts_proc
+        quote_tts_proc = None
+
+    if proc is not None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    # Also stop orphaned quote/TTS workers not tracked in this process.
+    subprocess.run(
+        [
+            "bash",
+            "-lc",
+            "pkill -f 'run_quote_tts_from_json.py' || true; "
+            "pkill -f 'ffmpeg.*udp://127.0.0.1:5004' || true",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    set_status("quote voice stopped")
+    return "quote voice stopped"
+
+
+def stop_all_stream_workers():
+    # Main stream stop should stop audio workers too, so background generation does not linger.
+    stop_video_source()
+    stop_musicgen_stream()
+    stop_quote_voice_stream()
+
+
+def generate_quote_data_inline(count: int, output_path: str):
+    count = max(1, int(count))
+    output_path = (output_path or "data/quotes/diffusiongemma_quotes.json").strip()
+    cmd = [
+        "bash",
+        "-lc",
+        (
+            "cd /home/gschi/FluxRT && "
+            f"uv run scripts/generate_quote_data_diffusiongemma.py --count {count} --output '{output_path}'"
+        ),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        msg = (result.stderr or result.stdout or "quote generation failed").strip()
+        set_status(f"quote gen failed: {msg}")
+        return f"quote gen failed: {msg}"
+    set_status(f"quote data generated: {output_path}")
+    return (result.stdout or f"quote data generated: {output_path}").strip()
+
+
+def start_quote_voice_stream(
+    quote_json_path: str,
+    voice_name: str,
+    interval_seconds: float,
+    include_author: bool,
+    shuffle_quotes: bool,
+    loop_quotes: bool,
+    reverb_enabled: bool,
+    echo_enabled: bool,
+):
+    global quote_tts_proc
+
+    quote_json_path = (quote_json_path or "data/quotes/diffusiongemma_quotes.json").strip()
+    if not quote_json_path:
+        return "quote voice: quote path required"
+
+    if _quote_tts_is_running():
+        return "quote voice: already running"
+
+    cmd_parts = [
+        "cd /home/gschi/FluxRT &&",
+        "uv run scripts/run_quote_tts_from_json.py",
+        f"--quotes '{quote_json_path}'",
+        f"--voice '{voice_name}'",
+        f"--interval {max(0.0, float(interval_seconds))}",
+        "--udp-url 'udp://127.0.0.1:5004?pkt_size=1316'",
+    ]
+    if not include_author:
+        cmd_parts.append("--no-author")
+    if shuffle_quotes:
+        cmd_parts.append("--shuffle")
+    if loop_quotes:
+        cmd_parts.append("--loop")
+    # Keep quote voice FX consistently on to avoid dry/cut-in sounding speech.
+    cmd_parts.append("--reverb")
+    cmd_parts.append("--last-word-echo")
+
+    full_cmd = " ".join(cmd_parts)
+    try:
+        with quote_tts_lock:
+            quote_tts_proc = subprocess.Popen(["bash", "-lc", full_cmd])
+    except Exception as exc:
+        msg = str(exc)
+        set_status(f"quote voice failed: {msg}")
+        return f"quote voice failed: {msg}"
+
+    set_status("quote voice started (udp mix on 5004)")
+    return "quote voice started (udp mix on 5004)"
 
 
 def _latest_musicgen_clip() -> str | None:
@@ -898,7 +1091,7 @@ def main():
     stream_config_path = args.config_path
 
     global repo_catalog_paths
-    get_processor()
+    set_status("idle")
     repo_catalog_paths = discover_repo_catalogs()
     catalog_choices = list(repo_catalog_paths.keys())
     default_catalog = "us_30a" if "us_30a" in repo_catalog_paths else (catalog_choices[0] if catalog_choices else None)
@@ -1010,7 +1203,7 @@ def main():
                 music_station_m3u = gr.Textbox(
                     label="Music M3U Catalog",
                     lines=8,
-                    value="#EXTM3U\n#EXTINF:-1,internet-radio.com station\nhttp://uk2.internet-radio.com:8024/",
+                    value="#EXTM3U\n#EXTINF:-1,Party Vibe Radio\nhttp://www.partyviberadio.com:8000/listen.pls?sid=1",
                     placeholder="#EXTM3U\n#EXTINF:-1,Station Name\nhttps://example.com/radio",
                 )
             with gr.Row():
@@ -1028,6 +1221,36 @@ def main():
                     value=12,
                     step=1,
                 )
+                musicgen_top_k = gr.Slider(
+                    label="Top-k",
+                    minimum=0,
+                    maximum=1000,
+                    value=250,
+                    step=1,
+                )
+            with gr.Row():
+                musicgen_top_p = gr.Slider(
+                    label="Top-p",
+                    minimum=0.05,
+                    maximum=1.0,
+                    value=0.95,
+                    step=0.01,
+                )
+                musicgen_temperature = gr.Slider(
+                    label="Temperature",
+                    minimum=0.1,
+                    maximum=2.0,
+                    value=1.0,
+                    step=0.05,
+                )
+                musicgen_guidance_scale = gr.Slider(
+                    label="Guidance Scale",
+                    minimum=1.0,
+                    maximum=8.0,
+                    value=3.0,
+                    step=0.1,
+                )
+            with gr.Row():
                 musicgen_stream_delay = gr.Slider(
                     label="Stream Delay Seconds",
                     minimum=2,
@@ -1051,6 +1274,7 @@ def main():
                 fanout_enable_youtube = gr.Checkbox(value=False, label="Fanout YouTube")
                 fanout_enable_twitch = gr.Checkbox(value=True, label="Fanout Twitch")
                 fanout_enable_facebook = gr.Checkbox(value=False, label="Fanout Facebook")
+                fanout_enable_quote_voice = gr.Checkbox(value=False, label="Mix Quote Voice")
 
             musicgen_status = gr.Textbox(label="MusicGen Status", value="idle", lines=3)
             with gr.Row():
@@ -1082,6 +1306,47 @@ def main():
                 interactive=False,
                 visible=False,
             )
+
+            with gr.Accordion("Quote Voice", open=False):
+                with gr.Row():
+                    quote_json_path = gr.Textbox(
+                        label="Quote JSON Path",
+                        value="data/quotes/diffusiongemma_quotes.json",
+                        lines=1,
+                    )
+                    quote_voice = gr.Dropdown(
+                        label="Voice",
+                        choices=voice_choices,
+                        value=voice_choices[0],
+                        allow_custom_value=True,
+                        interactive=True,
+                    )
+                with gr.Row():
+                    quote_interval = gr.Slider(
+                        label="Quote Interval Seconds",
+                        minimum=0,
+                        maximum=120,
+                        value=30,
+                        step=1,
+                    )
+                    quote_gen_count = gr.Slider(
+                        label="Generate Quote Count",
+                        minimum=1,
+                        maximum=200,
+                        value=30,
+                        step=1,
+                    )
+                with gr.Row():
+                    quote_include_author = gr.Checkbox(value=True, label="Speak Author Name")
+                    quote_shuffle = gr.Checkbox(value=True, label="Shuffle Quotes")
+                    quote_loop = gr.Checkbox(value=True, label="Loop Quotes")
+                    quote_reverb = gr.Checkbox(value=True, label="Quote Reverb")
+                    quote_echo = gr.Checkbox(value=True, label="Quote Last-Word Echo")
+                with gr.Row():
+                    quote_generate_btn = gr.Button("Generate Quote Data")
+                    quote_start_btn = gr.Button("Start Quote Voice")
+                    quote_stop_btn = gr.Button("Stop Quote Voice")
+                quote_status = gr.Textbox(label="Quote Voice Status", value="idle", lines=3)
 
             ref_image_input = gr.Image(
                 label="Reference Image",
@@ -1158,7 +1423,7 @@ def main():
             outputs=None,
         )
 
-        stream_stop_btn.click(stop_video_source, outputs=None)
+        stream_stop_btn.click(stop_all_stream_workers, outputs=None)
 
         source_timer.tick(
             poll_video,
@@ -1177,6 +1442,10 @@ def main():
                 musicgen_base_prompt,
                 musicgen_sample_seconds,
                 musicgen_gen_seconds,
+                musicgen_top_k,
+                musicgen_top_p,
+                musicgen_temperature,
+                musicgen_guidance_scale,
                 musicgen_stream_delay,
                 musicgen_crossfade_seconds,
             ],
@@ -1190,10 +1459,36 @@ def main():
 
         fanout_music_btn.click(
             start_fanout_with_music,
-            inputs=[fanout_enable_youtube, fanout_enable_twitch, fanout_enable_facebook],
+            inputs=[fanout_enable_youtube, fanout_enable_twitch, fanout_enable_facebook, fanout_enable_quote_voice],
             outputs=[musicgen_status],
             queue=False,
             show_progress=False,
+        )
+
+        quote_generate_btn.click(
+            generate_quote_data_inline,
+            inputs=[quote_gen_count, quote_json_path],
+            outputs=[quote_status],
+        )
+
+        quote_start_btn.click(
+            start_quote_voice_stream,
+            inputs=[
+                quote_json_path,
+                quote_voice,
+                quote_interval,
+                quote_include_author,
+                quote_shuffle,
+                quote_loop,
+                quote_reverb,
+                quote_echo,
+            ],
+            outputs=[quote_status],
+        )
+
+        quote_stop_btn.click(
+            stop_quote_voice_stream,
+            outputs=[quote_status],
         )
 
         load_music_catalog_btn.click(
