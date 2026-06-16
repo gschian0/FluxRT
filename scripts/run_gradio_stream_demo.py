@@ -564,8 +564,12 @@ def render_frame(frame_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
     frame_with_overlay = apply_overlay(frame_bgr) if is_overlay_enabled() else frame_bgr
     if is_filter_enabled():
-        _, processed = process_frame(frame_with_overlay)
-        return frame_with_overlay, processed
+        try:
+            _, processed = process_frame(frame_with_overlay)
+            return frame_with_overlay, processed
+        except Exception as exc:
+            set_status(f"filter degraded: {exc}")
+            return frame_with_overlay, frame_with_overlay
     return frame_with_overlay, frame_with_overlay
 
 def to_rgb(frame):
@@ -830,9 +834,15 @@ def poll_video():
     if input_frame is None:
         input_frame = _placeholder_rgb(f"Input: {status}")
     if processed_frame is None:
-        processed_frame = _placeholder_rgb(f"Processed: {status}")
+        if current_input_frame is not None:
+            processed_frame = input_frame
+        else:
+            processed_frame = _placeholder_rgb(f"Processed: {status}")
     elif isinstance(processed_frame, np.ndarray) and processed_frame.size > 0 and int(processed_frame.max()) == 0:
-        processed_frame = _placeholder_rgb(f"Processed warming up: {status}")
+        if current_input_frame is not None:
+            processed_frame = input_frame
+        else:
+            processed_frame = _placeholder_rgb(f"Processed warming up: {status}")
 
     return input_frame, processed_frame, status
 
@@ -944,7 +954,7 @@ def main():
                         channel_choice = gr.Dropdown(
                             label="Channel Choice",
                             choices=[],
-                            allow_custom_value=False,
+                            allow_custom_value=True,
                             filterable=True,
                             interactive=True,
                         )
