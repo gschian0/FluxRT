@@ -170,33 +170,63 @@ else
   )
 fi
 
-nohup ffmpeg -hide_banner -loglevel info \
-  -fflags +genpts+discardcorrupt+igndts \
-  -analyzeduration 2M -probesize 2M \
-  -thread_queue_size 16384 \
-  -i "$INPUT_URL" \
-  "${AUDIO_INPUT_ARGS[@]}" \
-  -map 0:v:0 -map 1:a:0 \
-  -vf "scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}" \
-  -r "$FPS" -fps_mode cfr \
-  -c:v libx264 -preset "$X264_PRESET" -tune zerolatency -pix_fmt yuv420p \
-  -force_key_frames "expr:gte(t,n_forced*2)" \
-  -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 \
-  -x264-params "nal-hrd=cbr:force-cfr=1" \
-  -b:v "$VIDEO_BITRATE" -minrate "$VIDEO_BITRATE" -maxrate "$VIDEO_MAXRATE" -bufsize "$VIDEO_BUFSIZE" \
-  -af "aresample=async=1:min_hard_comp=0.100:first_pts=0" \
-  -c:a aac -b:a "$AUDIO_BITRATE" -ar 48000 -ac 2 \
-  -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
-  -flvflags no_duration_filesize \
-  -f tee "$TEE_OUTPUT" \
-  > "$LOG_FILE" 2>&1 &
+_run_fanout_loop() {
+  while true; do
+    # Exit loop if stop was requested (PID file removed).
+    if [[ ! -f "$PID_FILE" ]]; then
+      echo "[fanout] PID file gone — stopping loop." >> "$LOG_FILE"
+      break
+    fi
+
+    echo "[fanout] $(date -Is) starting ffmpeg..." >> "$LOG_FILE"
+    ffmpeg -hide_banner -loglevel info \
+      -fflags +genpts+discardcorrupt+igndts \
+      -analyzeduration 2M -probesize 2M \
+      -thread_queue_size 16384 \
+      -i "$INPUT_URL" \
+      "${AUDIO_INPUT_ARGS[@]}" \
+      -map 0:v:0 -map 1:a:0 \
+      -vf "scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}" \
+      -r "$FPS" -fps_mode cfr \
+      -c:v libx264 -preset "$X264_PRESET" -tune zerolatency -pix_fmt yuv420p \
+      -force_key_frames "expr:gte(t,n_forced*2)" \
+      -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 \
+      -x264-params "nal-hrd=cbr:force-cfr=1" \
+      -b:v "$VIDEO_BITRATE" -minrate "$VIDEO_BITRATE" -maxrate "$VIDEO_MAXRATE" -bufsize "$VIDEO_BUFSIZE" \
+      -af "aresample=async=1:min_hard_comp=0.100:first_pts=0" \
+      -c:a aac -b:a "$AUDIO_BITRATE" -ar 48000 -ac 2 \
+      -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
+      -flvflags no_duration_filesize \
+      -f tee "$TEE_OUTPUT" \
+      >> "$LOG_FILE" 2>&1
+
+    EXIT_CODE=$?
+    if [[ ! -f "$PID_FILE" ]]; then
+      echo "[fanout] $(date -Is) stopped cleanly." >> "$LOG_FILE"
+      break
+    fi
+    echo "[fanout] $(date -Is) ffmpeg exited (code $EXIT_CODE) — reconnecting in 3s..." >> "$LOG_FILE"
+    sleep 3
+  done
+}
+
+nohup bash -c "$(declare -f _run_fanout_loop); \
+  INPUT_URL='$INPUT_URL'; \
+  AUDIO_INPUT_ARGS=(${AUDIO_INPUT_ARGS[*]@Q}); \
+  OUTPUT_WIDTH='$OUTPUT_WIDTH'; OUTPUT_HEIGHT='$OUTPUT_HEIGHT'; \
+  FPS='$FPS'; GOP='$GOP'; X264_PRESET='$X264_PRESET'; \
+  VIDEO_BITRATE='$VIDEO_BITRATE'; VIDEO_MAXRATE='$VIDEO_MAXRATE'; VIDEO_BUFSIZE='$VIDEO_BUFSIZE'; \
+  AUDIO_BITRATE='$AUDIO_BITRATE'; \
+  TEE_OUTPUT='$TEE_OUTPUT'; \
+  PID_FILE='$PID_FILE'; LOG_FILE='$LOG_FILE'; \
+  _run_fanout_loop" >> "$LOG_FILE" 2>&1 &
 
 FANOUT_PID=$!
 echo "$FANOUT_PID" > "$PID_FILE"
 
 sleep 2
 if kill -0 "$FANOUT_PID" 2>/dev/null; then
-  echo "RTMP fanout started."
+  echo "RTMP fanout started (auto-reconnect loop)."
   echo "PID: $FANOUT_PID"
   echo "Input: $INPUT_URL"
   echo "Targets configured: ${#TARGETS[@]}"
