@@ -15,8 +15,8 @@ from fluxrt.utils import crop_maximal_rectangle
 
 default_prompt = "claymation"
 default_stream_url = "https://30a-tv.com/feeds/masters/30atv.m3u8"
-default_music_radio_url = "http://www.partyviberadio.com:8000/listen.pls?sid=1"
-default_music_station_name = "Party Vibe Radio"
+default_music_radio_url = "http://london-dedicated.myautodj.com:8862/stream"
+default_music_station_name = "AutoDJ London"
 
 stream_processor = None
 input_tensor = None
@@ -113,6 +113,16 @@ def _write_to_udp(frame, fps=25):
             writer.stdin.write(frame.tobytes())
         except Exception:
             pass
+
+
+def _is_zero_frame(frame: np.ndarray | None) -> bool:
+    if frame is None:
+        return True
+    if not isinstance(frame, np.ndarray):
+        return False
+    if frame.size == 0:
+        return True
+    return int(frame.max()) == 0
 
 
 def get_processor():
@@ -558,6 +568,13 @@ def start_fanout_with_music(enable_youtube: bool, enable_twitch: bool, enable_fa
     return launch_msg + (" (quote voice mix enabled)" if enable_quote_voice else "")
 
 
+def start_fanout_with_music_ui(enable_youtube: bool, enable_twitch: bool, enable_facebook: bool, enable_quote_voice: bool):
+    msg = start_fanout_with_music(enable_youtube, enable_twitch, enable_facebook, enable_quote_voice)
+    stamp = time.strftime("%H:%M:%S")
+    ui_msg = f"[{stamp}] {msg}"
+    return ui_msg, ui_msg
+
+
 def _quote_tts_is_running() -> bool:
     with quote_tts_lock:
         return quote_tts_proc is not None and quote_tts_proc.poll() is None
@@ -654,6 +671,13 @@ def start_quote_voice_stream(
         cmd_parts.append("--shuffle")
     if loop_quotes:
         cmd_parts.append("--loop")
+    # Always auto-refresh so process never exits and kills UDP 5004.
+    # refresh-threshold=10 starts generating while 10 quotes remain (buys time).
+    # repeat-on-empty is the failsafe if generation is slow or fails.
+    cmd_parts.append("--auto-refresh")
+    cmd_parts.append("--refresh-threshold 10")
+    cmd_parts.append("--refresh-count 50")
+    cmd_parts.append("--repeat-on-empty")
     # Keep quote voice FX consistently on to avoid dry/cut-in sounding speech.
     cmd_parts.append("--reverb")
     cmd_parts.append("--last-word-echo")
@@ -899,7 +923,8 @@ def _local_video_loop(video_path: str, video_id: int):
             start = time.time()
             try:
                 input_frame, processed = render_frame(frame)
-                _write_to_udp(processed, fps=int(fps))
+                udp_frame = input_frame if _is_zero_frame(processed) else processed
+                _write_to_udp(udp_frame, fps=int(fps))
             except Exception as exc:
                 set_status(f"local processing error: {exc}")
                 time.sleep(0.1)
@@ -956,7 +981,8 @@ def _stream_loop(stream_url: str, video_id: int):
             start = time.time()
             try:
                 input_frame, processed = render_frame(frame)
-                _write_to_udp(processed, fps=25)
+                udp_frame = input_frame if _is_zero_frame(processed) else processed
+                _write_to_udp(udp_frame, fps=25)
             except Exception as exc:
                 set_status(f"stream processing error: {exc}")
                 time.sleep(0.1)
@@ -1066,7 +1092,8 @@ def process_webcam(frame):
 
     _, processed = render_frame(to_bgr(frame))
 
-    _write_to_udp(processed.copy(), fps=25)
+    udp_frame = frame if _is_zero_frame(processed) else processed
+    _write_to_udp(udp_frame.copy(), fps=25)
     return to_rgb(processed)
 
 
@@ -1203,7 +1230,7 @@ def main():
                 music_station_m3u = gr.Textbox(
                     label="Music M3U Catalog",
                     lines=8,
-                    value="#EXTM3U\n#EXTINF:-1,Party Vibe Radio\nhttp://www.partyviberadio.com:8000/listen.pls?sid=1",
+                    value="#EXTM3U\n#EXTINF:-1,AutoDJ London\nhttp://london-dedicated.myautodj.com:8862/stream",
                     placeholder="#EXTM3U\n#EXTINF:-1,Station Name\nhttps://example.com/radio",
                 )
             with gr.Row():
@@ -1274,8 +1301,9 @@ def main():
                 fanout_enable_youtube = gr.Checkbox(value=False, label="Fanout YouTube")
                 fanout_enable_twitch = gr.Checkbox(value=True, label="Fanout Twitch")
                 fanout_enable_facebook = gr.Checkbox(value=False, label="Fanout Facebook")
-                fanout_enable_quote_voice = gr.Checkbox(value=False, label="Mix Quote Voice")
+                fanout_enable_quote_voice = gr.Checkbox(value=True, label="Mix Quote Voice")
 
+            fanout_status = gr.Textbox(label="Fanout Status", value="idle", lines=3)
             musicgen_status = gr.Textbox(label="MusicGen Status", value="idle", lines=3)
             with gr.Row():
                 musicgen_audio_now = gr.Audio(
@@ -1339,7 +1367,7 @@ def main():
                 with gr.Row():
                     quote_include_author = gr.Checkbox(value=True, label="Speak Author Name")
                     quote_shuffle = gr.Checkbox(value=True, label="Shuffle Quotes")
-                    quote_loop = gr.Checkbox(value=True, label="Loop Quotes")
+                    quote_loop = gr.Checkbox(value=False, label="Loop Quotes")
                     quote_reverb = gr.Checkbox(value=True, label="Quote Reverb")
                     quote_echo = gr.Checkbox(value=True, label="Quote Last-Word Echo")
                 with gr.Row():
@@ -1458,11 +1486,9 @@ def main():
         )
 
         fanout_music_btn.click(
-            start_fanout_with_music,
+            start_fanout_with_music_ui,
             inputs=[fanout_enable_youtube, fanout_enable_twitch, fanout_enable_facebook, fanout_enable_quote_voice],
-            outputs=[musicgen_status],
-            queue=False,
-            show_progress=False,
+            outputs=[fanout_status, musicgen_status],
         )
 
         quote_generate_btn.click(

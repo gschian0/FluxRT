@@ -11,9 +11,7 @@ if [[ ! -f .venv/bin/activate ]]; then
 fi
 
 if [[ -z "${RADIO_URL:-}" ]]; then
-  echo "RADIO_URL is required."
-  echo "Example: RADIO_URL='https://example.com/live.m3u8' scripts/start_musicgen_radio_plus_musicGEN.sh"
-  exit 1
+  RADIO_URL="http://london-dedicated.myautodj.com:8862/stream"
 fi
 
 source .venv/bin/activate

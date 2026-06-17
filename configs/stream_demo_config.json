@@ -13,7 +13,7 @@
     "enable_int8_quantization": true,
     "target_fps": null,
     "interpolation_exp": 1,
-    "use_reference_image": true,
+    "use_reference_image": false,
     "reference_image_path": "local_samples/reference.png",
     "reference_image_resolution": {
         "height": 256,
