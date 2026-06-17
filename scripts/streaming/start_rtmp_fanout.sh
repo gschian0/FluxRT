@@ -12,30 +12,33 @@ ENV_FILE="${1:-scripts/streaming/rtmp_targets.env}"
 INPUT_URL="${INPUT_URL:-udp://127.0.0.1:5000?pkt_size=1316}"
 LOG_FILE="${LOG_FILE:-/tmp/fluxrt-rtmp-fanout.log}"
 PID_FILE="${PID_FILE:-/tmp/fluxrt-rtmp-fanout.pid}"
-VIDEO_BITRATE="${VIDEO_BITRATE:-450k}"
+VIDEO_BITRATE="${VIDEO_BITRATE:-2500k}"
 AUDIO_BITRATE="${AUDIO_BITRATE:-128k}"
-FPS="${FPS:-6}"
+# 24fps: ffmpeg -fps_mode cfr will pad/duplicate frames to hold this rate
+# even when inference only produces 2-4fps — prevents Twitch UNSTABLE warning.
+FPS="${FPS:-24}"
 # Keep keyframe interval at ~2s by default for ingest compatibility.
 GOP="${GOP:-$((FPS * 2))}"
-OUTPUT_WIDTH="${OUTPUT_WIDTH:-256}"
-OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-144}"
+OUTPUT_WIDTH="${OUTPUT_WIDTH:-640}"
+OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-360}"
 VIDEO_MAXRATE="${VIDEO_MAXRATE:-${VIDEO_BITRATE}}"
-VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-900k}"
+VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-5000k}"
 X264_PRESET="${X264_PRESET:-ultrafast}"
 ENABLE_YOUTUBE="${ENABLE_YOUTUBE:-1}"
 ENABLE_TWITCH="${ENABLE_TWITCH:-1}"
 ENABLE_FACEBOOK="${ENABLE_FACEBOOK:-1}"
-AUDIO_SOURCE_MODE="${AUDIO_SOURCE_MODE:-optional_url}"
+# url mode skips ffprobe probing of UDP ports — prevents silence-fill freeze at startup.
+AUDIO_SOURCE_MODE="${AUDIO_SOURCE_MODE:-url}"
 AUDIO_INPUT_URL="${AUDIO_INPUT_URL:-udp://127.0.0.1:5002?pkt_size=1316}"
-ENABLE_TTS_OVERLAY="${ENABLE_TTS_OVERLAY:-0}"
+ENABLE_TTS_OVERLAY="${ENABLE_TTS_OVERLAY:-1}"
 TTS_INPUT_URL="${TTS_INPUT_URL:-udp://127.0.0.1:5004?pkt_size=1316}"
-TTS_SOURCE_MODE="${TTS_SOURCE_MODE:-optional_url}"
-MUSIC_MIX_VOLUME="${MUSIC_MIX_VOLUME:-0.95}"
-TTS_MIX_VOLUME="${TTS_MIX_VOLUME:-1.60}"
+TTS_SOURCE_MODE="${TTS_SOURCE_MODE:-url}"
+MUSIC_MIX_VOLUME="${MUSIC_MIX_VOLUME:-0.65}"
+TTS_MIX_VOLUME="${TTS_MIX_VOLUME:-1.80}"
 STARTUP_BARS_SECONDS="${STARTUP_BARS_SECONDS:-0}"
 STARTUP_BARS_EXTEND_SECONDS="${STARTUP_BARS_EXTEND_SECONDS:-5}"
 MAX_BARS_EXTENSIONS="${MAX_BARS_EXTENSIONS:-2}"
-WAIT_FOR_VIDEO_READY="${WAIT_FOR_VIDEO_READY:-1}"
+WAIT_FOR_VIDEO_READY="${WAIT_FOR_VIDEO_READY:-0}"
 
 ensure_udp_buffer_params() {
   local url="$1"
@@ -255,7 +258,7 @@ _run_fanout_loop() {
         "${TTS_INPUT_ARGS[@]}" \
         -map 0:v:0 -map "[aout]" \
         -vf "scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}" \
-        -filter_complex "[1:a]volume=${MUSIC_MIX_VOLUME}[music];[2:a]volume=${TTS_MIX_VOLUME}[tts];[music][tts]amix=inputs=2:duration=longest:dropout_transition=2,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]" \
+        -filter_complex "[1:a]volume=${MUSIC_MIX_VOLUME}[music];[2:a]volume=${TTS_MIX_VOLUME}[tts];[music][tts]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]" \
         -r "$FPS" -fps_mode cfr \
         -c:v libx264 -preset "$X264_PRESET" -tune zerolatency -pix_fmt yuv420p \
         -force_key_frames "expr:gte(t,n_forced*2)" \

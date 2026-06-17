@@ -5,8 +5,9 @@ requires-python = ">=3.12"
 dependencies = [
     "transformers",
     "diffusers",
-    "numpy",
+    "numpy<2.3",
     "nvidia-riva-client>=2.26.0",
+    "scipy>=1.10,<1.14",
 ]
 
 [build-system]

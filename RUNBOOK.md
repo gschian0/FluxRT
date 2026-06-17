@@ -388,3 +388,216 @@ This creates a timestamped directory under `backups/` containing:
 Handoff summary document for this phase:
 
 - `BACKUP_AND_HANDOFF_2026-06-15.md`
+
+---
+
+## Freeze Recovery Sequence
+
+Use this whenever the broadcast freezes, goes silent, shows zero frames, or the app
+becomes unresponsive. Work through the stages in order — stop at whichever one fixes it.
+
+---
+
+### Stage 0 — Quick Diagnosis (run these first)
+
+```bash
+# Is the app still alive?
+ps -ef | grep run_gradio_stream_demo.py | grep -v grep
+
+# Is fanout alive?
+ps -ef | grep -E "start_rtmp_fanout.sh|ffmpeg.*tee|rtmp://live.twitch.tv" | grep -v grep
+
+# Is anything writing to video bus?
+lsof -i :5000 -i :5002 -i :5004
+
+# What is GPU doing?
+nvidia-smi
+
+# Last fanout log lines
+tail -n 30 /tmp/fluxrt-rtmp-fanout.log
+```
+
+---
+
+### Stage 1 — Silence Fallback Freeze ("silence fill streamed" in log)
+
+**What it looks like:** fanout log says `using silence fallback` or `Preroll audio not
+ready`. Stream goes live but audio is silent or the launch command stalls for 10-20s
+before returning.
+
+**Root cause:** `AUDIO_SOURCE_MODE=optional_url` causes `ffprobe` to probe each UDP
+port (5002, 5004) before starting. If music or TTS is not ready yet, each probe blocks
+for 2 seconds and the whole startup stalls or falls back to silence.
+
+**Fix:** Always launch fanout with `url` mode, not `optional_url`:
+
+```bash
+cd /home/gschi/FluxRT
+scripts/streaming/stop_rtmp_fanout.sh || true
+ENABLE_TWITCH=1 ENABLE_YOUTUBE=0 ENABLE_FACEBOOK=0 \
+ENABLE_TTS_OVERLAY=1 \
+AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url \
+STARTUP_BARS_SECONDS=0 WAIT_FOR_VIDEO_READY=0 \
+AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316' \
+TTS_INPUT_URL='udp://127.0.0.1:5004?pkt_size=1316' \
+scripts/streaming/start_rtmp_fanout.sh
+```
+
+The `url` mode connects directly without probing — it expects music/TTS to already be
+running. Start music and quote voice **before** fanout if using this mode manually.
+
+---
+
+### Stage 2 — Zero Frames / Black Video ("processed stats: min=0 max=0 mean=0.00")
+
+**What it looks like:** App is running, stream is live, but broadcast is black or
+frozen. Log shows repeated `processed stats: min=0 max=0 mean=0.00`.
+
+**Root cause:** GPU inference subprocess crashed (usually OOM) or an old stale FluxRT
+process is holding VRAM from a previous session.
+
+**Step 1 — Check GPU memory:**
+
+```bash
+nvidia-smi
+```
+
+If Memory-Usage is near 23034 MiB but no current process should be using it, stale
+processes are holding VRAM.
+
+**Step 2 — Kill stale processes:**
+
+```bash
+pkill -f "run_gradio_stream_demo.py" || true
+pkill -f "model_inference_subprocess" || true
+pkill -f "output_scheduler_subprocess" || true
+sleep 3
+nvidia-smi   # should now show 0-3 MiB used
+```
+
+**Step 3 — Relaunch with anti-fragmentation allocator:**
+
+```bash
+cd /home/gschi/FluxRT
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:128"
+uv run scripts/run_gradio_stream_demo.py --int8 --server-port 7861
+```
+
+---
+
+### Stage 3 — Fanout Dead (stream offline, no ffmpeg tee process)
+
+**What it looks like:** Twitch/YouTube shows stream offline. No ffmpeg tee process in `ps`.
+
+```bash
+# Restart fanout only (don't touch app or audio workers)
+cd /home/gschi/FluxRT
+scripts/streaming/stop_rtmp_fanout.sh || true
+ENABLE_TWITCH=1 ENABLE_YOUTUBE=0 ENABLE_FACEBOOK=0 \
+ENABLE_TTS_OVERLAY=1 \
+AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url \
+STARTUP_BARS_SECONDS=0 WAIT_FOR_VIDEO_READY=0 \
+AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316' \
+TTS_INPUT_URL='udp://127.0.0.1:5004?pkt_size=1316' \
+scripts/streaming/start_rtmp_fanout.sh
+
+# Confirm
+tail -n 20 /tmp/fluxrt-rtmp-fanout.log
+```
+
+---
+
+### Stage 4 — Quote Voice Gone Silent (no TTS on stream)
+
+**What it looks like:** Music plays but no spoken quotes.
+
+```bash
+# Check if quote process and its ffmpeg child are alive
+ps -ef | grep -E "run_quote_tts_from_json.py|ffmpeg.*5004" | grep -v grep
+lsof -i :5004
+
+# Restart quote voice
+pkill -f run_quote_tts_from_json.py || true
+pkill -f "ffmpeg.*udp://127.0.0.1:5004" || true
+sleep 2
+
+cd /home/gschi/FluxRT
+uv run scripts/run_quote_tts_from_json.py \
+  --quotes data/quotes/diffusiongemma_quotes.json \
+  --voice "Magpie-Multilingual.EN-US.Aria" \
+  --interval 30 \
+  --udp-url "udp://127.0.0.1:5004?pkt_size=1316" \
+  --shuffle --loop --reverb --last-word-echo &
+```
+
+Then restart fanout so it picks up the fresh TTS bus (Stage 3 command).
+
+---
+
+### Stage 5 — Full Hard Reset (everything frozen, nothing responding)
+
+Run this when stages 1–4 don't help or the app terminal is unresponsive.
+
+```bash
+cd /home/gschi/FluxRT
+
+# 1. Kill everything FluxRT-related
+pkill -f "run_gradio_stream_demo.py" || true
+pkill -f "run_quote_tts_from_json.py" || true
+pkill -f "run_musicgen_radio_plus_musicGEN.py" || true
+pkill -f "start_rtmp_fanout.sh" || true
+pkill -f "ffmpeg.*udp://127.0.0.1:5000" || true
+pkill -f "ffmpeg.*udp://127.0.0.1:5002" || true
+pkill -f "ffmpeg.*udp://127.0.0.1:5004" || true
+pkill -f "ffmpeg.*rtmp://live.twitch.tv" || true
+pkill -f "model_inference_subprocess" || true
+pkill -f "output_scheduler_subprocess" || true
+sleep 4
+
+# 2. Confirm GPU is clear
+nvidia-smi
+
+# 3. Relaunch app with clean CUDA settings
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:128"
+uv run scripts/run_gradio_stream_demo.py --int8 --server-port 7861 &
+sleep 15
+
+# 4. Start music
+scripts/start_musicgen_radio_plus_musicGEN.sh &
+sleep 10
+
+# 5. Start quote voice
+uv run scripts/run_quote_tts_from_json.py \
+  --quotes data/quotes/diffusiongemma_quotes.json \
+  --voice "Magpie-Multilingual.EN-US.Aria" \
+  --interval 30 \
+  --udp-url "udp://127.0.0.1:5004?pkt_size=1316" \
+  --shuffle --loop --reverb --last-word-echo &
+sleep 5
+
+# 6. Start fanout (url mode — no probing)
+ENABLE_TWITCH=1 ENABLE_YOUTUBE=0 ENABLE_FACEBOOK=0 \
+ENABLE_TTS_OVERLAY=1 \
+AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url \
+STARTUP_BARS_SECONDS=0 WAIT_FOR_VIDEO_READY=0 \
+AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316' \
+TTS_INPUT_URL='udp://127.0.0.1:5004?pkt_size=1316' \
+scripts/streaming/start_rtmp_fanout.sh
+
+# 7. Health check
+echo "=== PROCESSES ===" && ps -ef | grep -E "run_gradio|run_quote_tts|run_musicgen|ffmpeg.*tee" | grep -v grep
+echo "=== PORTS ===" && lsof -i :5000 -i :5002 -i :5004
+echo "=== GPU ===" && nvidia-smi | grep -E "MiB|Util"
+echo "=== FANOUT LOG ===" && tail -n 15 /tmp/fluxrt-rtmp-fanout.log
+```
+
+---
+
+### Quick Health Check (paste anytime)
+
+```bash
+echo "--- GPU ---" && nvidia-smi | grep -E "MiB|Util|No running"
+echo "--- PROCESSES ---" && ps -ef | grep -E "run_gradio|run_quote_tts|run_musicgen|ffmpeg.*tee" | grep -v grep
+echo "--- PORTS ---" && lsof -i :5000 -i :5002 -i :5004 2>/dev/null | grep -v COMMAND
+echo "--- FANOUT ---" && tail -n 5 /tmp/fluxrt-rtmp-fanout.log
+```
