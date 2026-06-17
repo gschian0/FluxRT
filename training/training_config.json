@@ -1,0 +1,51 @@
+{
+  "flux_lora": {
+    "default_rank": 32,
+    "default_learning_rate": 1e-4,
+    "default_num_epochs": 10,
+    "default_batch_size": 1,
+    "model_path": "/home/gschi/FluxRT/FLUX.2-klein-4B",
+    "target_modules": ["to_q", "to_k", "to_v", "to_out"],
+    "lora_dropout": 0.05,
+    "lora_alpha_multiplier": 2,
+    "image_size": 512,
+    "recommended_ranks": {
+      "lightweight": 16,
+      "balanced": 32,
+      "highcapacity": 64
+    }
+  },
+  "musicgen_lora": {
+    "default_rank": 16,
+    "default_learning_rate": 1e-4,
+    "default_num_epochs": 10,
+    "default_batch_size": 1,
+    "model_id": "facebook/musicgen-small",
+    "target_modules": ["q_proj", "v_proj"],
+    "lora_dropout": 0.05,
+    "lora_alpha_multiplier": 2,
+    "sample_rate": 16000,
+    "duration_seconds": 10,
+    "recommended_ranks": {
+      "lightweight": 8,
+      "balanced": 16,
+      "highcapacity": 32
+    }
+  },
+  "training": {
+    "device": "cuda",
+    "dtype": "float16",
+    "gradient_checkpointing": false,
+    "use_int8": true,
+    "warmup_steps": 100,
+    "weight_decay": 0.01,
+    "max_grad_norm": 1.0
+  },
+  "inference": {
+    "enable_lora_by_default": true,
+    "trigger_phrase_format": "[{mode}_{style_name}]",
+    "lora_scale": 1.0,
+    "flux_guidance_scale": 3.5,
+    "musicgen_temperature": 1.0
+  }
+}

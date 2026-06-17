@@ -1,452 +1,452 @@
 [
   {
-    "quote": "The wise man does not carry the weight of yesterday, but remembers the path to avoid walking it again.",
-    "philosopher": "Confucius",
-    "topic": "memory",
-    "form": "hard-earned lesson",
-    "mood": "serene",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:24:58.649115+00:00"
-  },
-  {
-    "quote": "Turn your soul toward the eternal sun, for the light of Good dissolves all shadows of the cave.",
-    "philosopher": "Plato",
-    "topic": "hope",
-    "form": "calm imperative",
-    "mood": "serene",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:24:59.133766+00:00"
-  },
-  {
-    "quote": "To master the tool, one must first lose the hand and let the work finish itself.",
+    "quote": "Time is a river that carves the canyon while the stone stands silent in the current.",
     "philosopher": "Emerson",
-    "topic": "craft",
-    "form": "paradox",
-    "mood": "serene",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:24:59.734027+00:00"
-  },
-  {
-    "quote": "The soul that does not master itself is a guest in a house it does not control.",
-    "philosopher": "Socrates",
-    "topic": "discipline",
-    "form": "gentle warning",
-    "mood": "serene",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:00.204555+00:00"
-  },
-  {
-    "quote": "He who fears the shadow will never walk where the sun shines.",
-    "philosopher": "Confucius",
-    "topic": "fear",
-    "form": "gentle warning",
-    "mood": "serene",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:00.662575+00:00"
-  },
-  {
-    "quote": "He who rushes to catch tomorrow loses today today, yet the moment arrives only for those who wait.",
-    "philosopher": "Confucius",
     "topic": "time",
-    "form": "paradox",
-    "mood": "curious",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:01.118469+00:00"
-  },
-  {
-    "quote": "He who rushes the harvest reaps only the bitter shadow of a sunburnt fruit.",
-    "philosopher": "Plato",
-    "topic": "patience",
-    "form": "gentle warning",
+    "form": "concrete metaphor",
     "mood": "stoic",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:01.620248+00:00"
+    "generated_at": "2026-06-17T03:50:12.431874+00:00"
   },
   {
-    "quote": "The deepest speech is found in the tongue that refuses to speak.",
-    "philosopher": "Emerson",
-    "topic": "silence",
-    "form": "paradox",
-    "mood": "austere",
+    "quote": "The river does not chase the sea; it simply waits for the mountain to carve the way.",
+    "philosopher": "Laozi",
+    "topic": "patience",
+    "form": "concrete metaphor",
+    "mood": "serene",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:02.083792+00:00"
+    "generated_at": "2026-06-17T03:50:12.970511+00:00"
   },
   {
-    "quote": "Beware the shadow of the past, lest the soul mistake the echo for the light.",
-    "philosopher": "Plato",
-    "topic": "memory",
-    "form": "gentle warning",
-    "mood": "austere",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:02.675407+00:00"
-  },
-  {
-    "quote": "To scatter your gaze is to possess nothing; to focus the soul is to finally own the world.",
-    "philosopher": "Socrates",
+    "quote": "Do not scatter your soul among trivialities; the mind is the only territory you truly possess.",
+    "philosopher": "Marcus Aurelius",
     "topic": "attention",
     "form": "hard-earned lesson",
     "mood": "lucid",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:03.130333+00:00"
+    "generated_at": "2026-06-17T03:50:13.477976+00:00"
   },
   {
-    "quote": "To find the moment, one must first lose the eternity spent waiting for it.",
-    "philosopher": "Kierkegaard",
-    "topic": "time",
-    "form": "paradox",
-    "mood": "curious",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:03.692533+00:00"
-  },
-  {
-    "quote": "In the profound stillness of silence, the soul finally finds the voice it lost to speaking.",
-    "philosopher": "Plato",
-    "topic": "silence",
-    "form": "paradox",
-    "mood": "tender",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:04.123695+00:00"
-  },
-  {
-    "quote": "The deep lake does not speak to reflect the moon; it simply holds the light.",
-    "philosopher": "Laozi",
-    "topic": "silence",
-    "form": "concrete metaphor",
-    "mood": "lucid",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:04.554450+00:00"
-  },
-  {
-    "quote": "To conquer the mountain, one must first become the stillness that waits it.",
-    "philosopher": "Nietzsche",
-    "topic": "patience",
-    "form": "paradox",
-    "mood": "serene",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:04.974341+00:00"
-  },
-  {
-    "quote": "The river that fears its own depth forgets the path to the sea.",
-    "philosopher": "Laozi",
-    "topic": "fear",
-    "form": "gentle warning",
-    "mood": "lucid",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:05.485503+00:00"
-  },
-  {
-    "quote": "Silence is the white marble where the soul carves its own law.",
-    "philosopher": "Emerson",
-    "topic": "silence",
-    "form": "concrete metaphor",
-    "mood": "austere",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:05.918616+00:00"
-  },
-  {
-    "quote": "Seek the silence of the soul to recall the eternal forms the eye once beheld.",
-    "philosopher": "Plato",
-    "topic": "memory",
-    "form": "calm imperative",
-    "mood": "austere",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:06.351266+00:00"
-  },
-  {
-    "quote": "To become the river, one must first abandon the shore that promised to stay.",
-    "philosopher": "Kierkegaard",
-    "topic": "change",
-    "form": "koan-like reflection",
-    "mood": "lucid",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:06.865621+00:00"
-  },
-  {
-    "quote": "The mountain does not chase the clouds; it waits for the sun to reveal the path.",
-    "philosopher": "Confucius",
-    "topic": "patience",
-    "form": "koan-like reflection",
-    "mood": "austere",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:07.274049+00:00"
-  },
-  {
-    "quote": "The flower does not hurry the sun; it simply opens when the light arrives.",
-    "philosopher": "Marcus Aurelius",
-    "topic": "patience",
-    "form": "koan-like reflection",
-    "mood": "tender",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:07.702989+00:00"
-  },
-  {
-    "quote": "The shadow is not the enemy, but the soul that has turned away from the sun.",
-    "philosopher": "Plato",
-    "topic": "fear",
-    "form": "koan-like reflection",
-    "mood": "austere",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:08.204728+00:00"
-  },
-  {
-    "quote": "The river that refuses to bend will eventually find itself broken against the stone.",
-    "philosopher": "Laozi",
-    "topic": "change",
-    "form": "gentle warning",
-    "mood": "lucid",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:08.785219+00:00"
-  },
-  {
-    "quote": "The iron path does not break the soul; it teaches the flower how to bloom through the stone.",
-    "philosopher": "Nietzsche",
-    "topic": "discipline",
-    "form": "koan-like reflection",
-    "mood": "tender",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:09.456601+00:00"
-  },
-  {
-    "quote": "To remain still, one must first learn to run with the world.",
-    "philosopher": "Seneca",
-    "topic": "change",
-    "form": "paradox",
-    "mood": "curious",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:10.005513+00:00"
-  },
-  {
-    "quote": "Tame the fire within until it becomes the light that car your path.",
-    "philosopher": "Nietzsche",
-    "topic": "discipline",
-    "form": "calm imperative",
-    "mood": "stoic",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:10.984963+00:00"
-  },
-  {
-    "quote": "Quiet the clam of the world to let the soul speak its own truth.",
-    "philosopher": "Emerson",
-    "topic": "silence",
-    "form": "calm imperative",
-    "mood": "austere",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:11.489293+00:00"
-  },
-  {
-    "quote": "Withdraw your mind from the imagined future and find peace in the present moment.",
-    "philosopher": "Marcus Aurelius",
-    "topic": "fear",
-    "form": "calm imperative",
-    "mood": "austere",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:11.943705+00:00"
-  },
-  {
-    "quote": "Do not fear the shifting tide, for only the river that moves finds the path to the sea.",
-    "philosopher": "Seneca",
-    "topic": "change",
-    "form": "hard-earned lesson",
-    "mood": "stoic",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:12.488757+00:00"
-  },
-  {
-    "quote": "Hope is the only anchor that keeps us afloat by constantly dragging us toward the depths.",
+    "quote": "Does the lamp illuminate the path, or does it merely deceive the traveler into believing the abyss has ended?",
     "philosopher": "Seneca",
     "topic": "hope",
-    "form": "paradox",
+    "form": "concrete metaphor",
     "mood": "curious",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:13.051161+00:00"
+    "generated_at": "2026-06-17T03:50:13.947189+00:00"
   },
   {
-    "quote": "He who fears the shadow has already lost the sun.",
-    "philosopher": "Confucius",
-    "topic": "fear",
-    "form": "paradox",
-    "mood": "stoic",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:13.488315+00:00"
-  },
-  {
-    "quote": "The chisel does not mourn the stone; it only obeys the strike until the form reveals itself.",
-    "philosopher": "Kierkegaard",
-    "topic": "craft",
-    "form": "concrete metaphor",
-    "mood": "stoic",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:13.972280+00:00"
-  },
-  {
-    "quote": "One does not remember the past; one devours it until the soul becomes the flame.",
-    "philosopher": "Nietzsche",
-    "topic": "memory",
-    "form": "hard-earned lesson",
-    "mood": "curious",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:14.453715+00:00"
-  },
-  {
-    "quote": "The potter does not force the clay, but awakens the sleeping vessel already within the earth.",
-    "philosopher": "Plato",
-    "topic": "craft",
-    "form": "concrete metaphor",
-    "mood": "tender",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:14.899442+00:00"
-  },
-  {
-    "quote": "Fear is a shadow cast by a phantom; step into the light, and the terror vanishes.",
-    "philosopher": "Seneca",
-    "topic": "fear",
-    "form": "hard-earned lesson",
-    "mood": "serene",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:15.516791+00:00"
-  },
-  {
-    "quote": "The river does not hurry the sea, yet it arrives; why does the heart race the mountain?",
+    "quote": "The river does not fight the stone; it finds the sea by letting go of the bank.",
     "philosopher": "Laozi",
-    "topic": "patience",
+    "topic": "change",
     "form": "hard-earned lesson",
-    "mood": "curious",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:15.973571+00:00"
-  },
-  {
-    "quote": "Do not pluck the fruit before its season, for the soul that rushes time gathers only the bitterness of haste.",
-    "philosopher": "Seneca",
-    "topic": "patience",
-    "form": "gentle warning",
-    "mood": "tender",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:16.444675+00:00"
-  },
-  {
-    "quote": "The river does not hold the water, yet the bank remembers the path.",
-    "philosopher": "Confucius",
-    "topic": "memory",
-    "form": "koan-like reflection",
-    "mood": "lucid",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:16.859637+00:00"
-  },
-  {
-    "quote": "The hand that rushes the wood finds only the grain broken and the spirit restless.",
-    "philosopher": "Confucius",
-    "topic": "craft",
-    "form": "gentle warning",
     "mood": "serene",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:17.328832+00:00"
+    "generated_at": "2026-06-17T03:50:14.419675+00:00"
   },
   {
-    "quote": "Step into the abyss of uncertainty and find the light that reason cannot provide.",
-    "philosopher": "Kierkegaard",
+    "quote": "The bamboo does not fear the winter frost, for it holds the memory of spring within its hollow core.",
+    "philosopher": "Confucius",
     "topic": "hope",
-    "form": "calm imperative",
+    "form": "concrete metaphor",
     "mood": "lucid",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:17.814700+00:00"
+    "generated_at": "2026-06-17T03:50:14.934554+00:00"
   },
   {
-    "quote": "Order your passions through constant habit, for excellence is the fruit of a disciplined soul.",
+    "quote": "Does the lamp illuminate the path, or merely reveal the shadows we fear to walk?",
+    "philosopher": "Seneca",
+    "topic": "hope",
+    "form": "concrete metaphor",
+    "mood": "curious",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:15.456651+00:00"
+  },
+  {
+    "quote": "The soul that rushes the harvest learns only the bitterness of the empty hand.",
+    "philosopher": "Socrates",
+    "topic": "patience",
+    "form": "hard-earned lesson",
+    "mood": "austere",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:15.923252+00:00"
+  },
+  {
+    "quote": "Time is a river that carves the stone, yet the water remains untouched by the path it creates.",
     "philosopher": "Aristotle",
-    "topic": "discipline",
-    "form": "calm imperative",
-    "mood": "lucid",
+    "topic": "time",
+    "form": "concrete metaphor",
+    "mood": "curious",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:18.351996+00:00"
+    "generated_at": "2026-06-17T03:50:16.406687+00:00"
   },
   {
-    "quote": "The flower does not fear the winter, for it has learned the patience of the sun.",
-    "philosopher": "Confucius",
-    "topic": "hope",
-    "form": "hard-earned lesson",
-    "mood": "serene",
+    "quote": "Does the shadow fear the wall, or does it simply wait where the light refuses to go?",
+    "philosopher": "Epictetus",
+    "topic": "fear",
+    "form": "concrete metaphor",
+    "mood": "curious",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:18.813337+00:00"
+    "generated_at": "2026-06-17T03:50:16.845905+00:00"
   },
   {
-    "quote": "To remain still, one must flow with the river that never stays.",
-    "philosopher": "Laozi",
-    "topic": "change",
+    "quote": "To remember what matters, one must first forget everything that no longer belongs to the soul.",
+    "philosopher": "Epictetus",
+    "topic": "memory",
     "form": "paradox",
     "mood": "stoic",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:19.270214+00:00"
+    "generated_at": "2026-06-17T03:50:18.075728+00:00"
   },
   {
-    "quote": "Why do you grant your mind to shadows when the sun of reason waits within?",
-    "philosopher": "Marcus Aurelius",
+    "quote": "Do not chase the shifting shadow, for the soul that forgets the shore will surely be lost in the tide.",
+    "philosopher": "Plato",
+    "topic": "change",
+    "form": "gentle warning",
+    "mood": "serene",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:18.538406+00:00"
+  },
+  {
+    "quote": "Beware where you rest your gaze, for the soul grows into the shape it chooses to behold.",
+    "philosopher": "Emerson",
     "topic": "attention",
     "form": "gentle warning",
     "mood": "curious",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:19.955341+00:00"
+    "generated_at": "2026-06-17T03:50:19.040025+00:00"
   },
   {
-    "quote": "Silence is not the absence of words, but the threshold where the soul finally stops arguing with itself.",
-    "philosopher": "Kierkegaard",
-    "topic": "silence",
-    "form": "hard-earned lesson",
-    "mood": "serene",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:20.371045+00:00"
-  },
-  {
-    "quote": "The river does not fight the bank; it simply remembers the path to the sea.",
-    "philosopher": "Emerson",
+    "quote": "Does the rider not tame the wild stallion to guide the chariot toward the sun?",
+    "philosopher": "Plato",
     "topic": "discipline",
+    "form": "concrete metaphor",
+    "mood": "curious",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:19.571833+00:00"
+  },
+  {
+    "quote": "To remain the same, one must relentlessly destroy everything one once was.",
+    "philosopher": "Nietzsche",
+    "topic": "change",
+    "form": "paradox",
+    "mood": "lucid",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:20.080910+00:00"
+  },
+  {
+    "quote": "Carve the wood until it yields the soul you feared was within.",
+    "philosopher": "Nietzsche",
+    "topic": "craft",
+    "form": "calm imperative",
+    "mood": "tender",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:20.564100+00:00"
+  },
+  {
+    "quote": "The moment is not a bridge to cross, but a hand held until the world lets go.",
+    "philosopher": "Kierkegaard",
+    "topic": "time",
+    "form": "koan-like reflection",
+    "mood": "tender",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:21.020265+00:00"
+  },
+  {
+    "quote": "He who fears losing what he does not possess has already lost everything.",
+    "philosopher": "Epictetus",
+    "topic": "fear",
+    "form": "paradox",
+    "mood": "lucid",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:21.484536+00:00"
+  },
+  {
+    "quote": "Does the shadow grow because the mountain rises, or simply because the sun has forgotten to light?",
+    "philosopher": "Seneca",
+    "topic": "fear",
+    "form": "concrete metaphor",
+    "mood": "curious",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:21.988634+00:00"
+  },
+  {
+    "quote": "Why do you hoard the hour as if it were yours, when the universe merely lent it to you?",
+    "philosopher": "Epictetus",
+    "topic": "time",
+    "form": "gentle warning",
+    "mood": "curious",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:22.483907+00:00"
+  },
+  {
+    "quote": "Seek the sun with steady eyes, lest the soul forget the weight of the shadows it leaves behind.",
+    "philosopher": "Plato",
+    "topic": "hope",
+    "form": "gentle warning",
+    "mood": "tender",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:22.963764+00:00"
+  },
+  {
+    "quote": "Does the shadow fear the light, or does the soul fear the sun that reveals the shadow?",
+    "philosopher": "Plato",
+    "topic": "fear",
     "form": "koan-like reflection",
     "mood": "curious",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:20.790688+00:00"
+    "generated_at": "2026-06-17T03:50:23.482007+00:00"
   },
   {
-    "quote": "Do not treat the present as a pause, for the river flows away even while you speak.",
+    "quote": "Accept the flow of the universe without resistance, for what changes is merely nature revealing itself.",
     "philosopher": "Marcus Aurelius",
-    "topic": "time",
+    "topic": "change",
+    "form": "calm imperative",
+    "mood": "austere",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:23.936706+00:00"
+  },
+  {
+    "quote": "To own the world, one must first learn to look away from it.",
+    "philosopher": "Socrates",
+    "topic": "attention",
+    "form": "paradox",
+    "mood": "stoic",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:24.381652+00:00"
+  },
+  {
+    "quote": "Relinquish the man you were, for the soul grows only by shedding its old skin.",
+    "philosopher": "Socrates",
+    "topic": "change",
+    "form": "calm imperative",
+    "mood": "austere",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:24.849664+00:00"
+  },
+  {
+    "quote": "Hope is not the sun we seek, but the light the eyes remember after the cave has finally surrendered.",
+    "philosopher": "Plato",
+    "topic": "hope",
+    "form": "hard-earned lesson",
+    "mood": "tender",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:25.424580+00:00"
+  },
+  {
+    "quote": "The river does not hurry to the sea, yet it carves the stone by simply remaining.",
+    "philosopher": "Laozi",
+    "topic": "patience",
+    "form": "hard-earned lesson",
+    "mood": "curious",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:25.893679+00:00"
+  },
+  {
+    "quote": "To master the craft, one must first become the tool, then break the tool away.",
+    "philosopher": "Marcus Aurelius",
+    "topic": "craft",
+    "form": "paradox",
+    "mood": "stoic",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:26.397949+00:00"
+  },
+  {
+    "quote": "The soul does not speak in words, but breathes in the vast where words finally end.",
+    "philosopher": "Emerson",
+    "topic": "silence",
+    "form": "koan-like reflection",
+    "mood": "lucid",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:26.999341+00:00"
+  },
+  {
+    "quote": "Empty your mind and let the world speak for itself.",
+    "philosopher": "Laozi",
+    "topic": "silence",
+    "form": "calm imperative",
+    "mood": "austere",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:27.447801+00:00"
+  },
+  {
+    "quote": "Care not to polish the past too brightly, lest you forget how to live within the present.",
+    "philosopher": "Socrates",
+    "topic": "memory",
     "form": "gentle warning",
     "mood": "lucid",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:21.357903+00:00"
+    "generated_at": "2026-06-17T03:50:28.060400+00:00"
   },
   {
-    "quote": "The river does not hurry the sea; it simply ceases to be anywhere else.",
-    "philosopher": "Socrates",
-    "topic": "patience",
-    "form": "koan-like reflection",
+    "quote": "The traveler who seeks the distant light must first lose the path beneath his feet.",
+    "philosopher": "Confucius",
+    "topic": "hope",
+    "form": "paradox",
+    "mood": "curious",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:28.540820+00:00"
+  },
+  {
+    "quote": "To master the tool, one must first become its slave through endless labor.",
+    "philosopher": "Seneca",
+    "topic": "craft",
+    "form": "paradox",
     "mood": "austere",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:21.822552+00:00"
+    "generated_at": "2026-06-17T03:50:30.012465+00:00"
   },
   {
-    "quote": "He who fears the shadow is already blinded by the light that creates it.",
-    "philosopher": "Plato",
+    "quote": "Do not rush the work of your hands, for a hurried craft betrays a restless soul.",
+    "philosopher": "Marcus Aurelius",
+    "topic": "craft",
+    "form": "gentle warning",
+    "mood": "stoic",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:30.464236+00:00"
+  },
+  {
+    "quote": "The chisel does not command the wood; it merely obeys the hand that knows where the grain lies.",
+    "philosopher": "Epictetus",
+    "topic": "craft",
+    "form": "koan-like reflection",
+    "mood": "lucid",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:31.120741+00:00"
+  },
+  {
+    "quote": "Quiet the noise of the world until your soul finally dares to speak to itself.",
+    "philosopher": "Kierkegaard",
+    "topic": "silence",
+    "form": "calm imperative",
+    "mood": "lucid",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:31.765644+00:00"
+  },
+  {
+    "quote": "Silence is the harvest of a soul that has finally exhausted the vanity of words.",
+    "philosopher": "Emerson",
+    "topic": "silence",
+    "form": "hard-earned lesson",
+    "mood": "austere",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:32.213441+00:00"
+  },
+  {
+    "quote": "He who seeks everything finds nothing, but he who focuses on one possesses the entire world.",
+    "philosopher": "Confucius",
+    "topic": "attention",
+    "form": "paradox",
+    "mood": "stoic",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:32.864773+00:00"
+  },
+  {
+    "quote": "He who rushes to the destination arrives only to find himself still beginning.",
+    "philosopher": "Confucius",
+    "topic": "patience",
+    "form": "paradox",
+    "mood": "stoic",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:33.316211+00:00"
+  },
+  {
+    "quote": "Time is not lost to him who waits, but forged for the soul that learns to endure.",
+    "philosopher": "Seneca",
+    "topic": "patience",
+    "form": "hard-earned lesson",
+    "mood": "austere",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:33.973749+00:00"
+  },
+  {
+    "quote": "The wise man guards his tongue until necessity; the fool exhausts his soul speaking wind.",
+    "philosopher": "Confucius",
+    "topic": "silence",
+    "form": "hard-earned lesson",
+    "mood": "stoic",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:34.488540+00:00"
+  },
+  {
+    "quote": "Fear is a shadow cast by a phantom that vanishes the moment you turn to face the sun.",
+    "philosopher": "Epictetus",
+    "topic": "fear",
+    "form": "concrete metaphor",
+    "mood": "lucid",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:34.981859+00:00"
+  },
+  {
+    "quote": "He who fears the end has already surrendered the life he seeks to protect.",
+    "philosopher": "Socrates",
     "topic": "fear",
     "form": "paradox",
     "mood": "stoic",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:22.262617+00:00"
+    "generated_at": "2026-06-17T03:50:38.715993+00:00"
   },
   {
-    "quote": "Do not grasp the fruit before it is ripe, or you will taste only the bitterness of your own haste.",
+    "quote": "Guard your gaze from the trivial, lest your soul becomes what the eyes feast upon.",
     "philosopher": "Epictetus",
-    "topic": "patience",
+    "topic": "attention",
     "form": "gentle warning",
-    "mood": "stoic",
-    "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:22.916492+00:00"
-  },
-  {
-    "quote": "Memory is a dry well in the cave, holding the reflection of a sun that has long since set.",
-    "philosopher": "Plato",
-    "topic": "memory",
-    "form": "concrete metaphor",
     "mood": "austere",
     "model": "google/diffusiongemma-26b-a4b-it",
-    "generated_at": "2026-06-17T03:25:23.341795+00:00"
+    "generated_at": "2026-06-17T03:50:39.240091+00:00"
+  },
+  {
+    "quote": "Master your fleeting impulses today, or they will master your life tomorrow.",
+    "philosopher": "Seneca",
+    "topic": "discipline",
+    "form": "calm imperative",
+    "mood": "lucid",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:39.726077+00:00"
+  },
+  {
+    "quote": "The world is only as wide as your kindness reaches; look softly, and the moment becomes home.",
+    "philosopher": "Marcus Aurelius",
+    "topic": "attention",
+    "form": "koan-like reflection",
+    "mood": "tender",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:40.294896+00:00"
+  },
+  {
+    "quote": "To be truly free, one must first become a willing slave to their own will.",
+    "philosopher": "Epictetus",
+    "topic": "discipline",
+    "form": "paradox",
+    "mood": "curious",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:40.760563+00:00"
+  },
+  {
+    "quote": "To remember everything is to lose the world; to forget is to finally possess it.",
+    "philosopher": "Kierkegaard",
+    "topic": "memory",
+    "form": "paradox",
+    "mood": "serene",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:41.255060+00:00"
+  },
+  {
+    "quote": "Hope is not the absence of the abyss, but the trembling leap taken when the void demands an answer.",
+    "philosopher": "Kierkegaard",
+    "topic": "hope",
+    "form": "hard-earned lesson",
+    "mood": "curious",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:41.788758+00:00"
+  },
+  {
+    "quote": "Memory is not the preservation of the past, but the gentle persistence of what the soul has truly loved.",
+    "philosopher": "Aristotle",
+    "topic": "memory",
+    "form": "koan-like reflection",
+    "mood": "tender",
+    "model": "google/diffusiongemma-26b-a4b-it",
+    "generated_at": "2026-06-17T03:50:42.418408+00:00"
   }
 ]
