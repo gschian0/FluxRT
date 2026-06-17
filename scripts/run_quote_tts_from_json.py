@@ -61,16 +61,18 @@ class UdpAudioWriter:
             "-c:a",
             "aac",
             "-b:a",
-            "128k",
+            "192k",  # Increased from 128k for better quality
             "-ar",
             "48000",
             "-ac",
             "2",
+            "-fflags",
+            "+genpts",  # Generate pts for smoother streaming
             "-f",
             "mpegts",
             self.udp_url,
         ]
-        return subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        return subprocess.Popen(cmd, stdin=subprocess.PIPE, bufsize=65536)
 
     def _write_pcm_realtime(self, pcm_bytes: bytes) -> None:
         if not pcm_bytes:
@@ -291,8 +293,10 @@ def main() -> None:
             if args.interval > 0:
                 if udp_writer is not None and not args.no_silence_fill:
                     try:
-                        udp_writer.write_silence(args.interval)
-                        print(f"Silence fill streamed for {args.interval:.1f}s")
+                        # Add extra silence padding (0.5s) to prevent amix discontinuities
+                        silence_duration = args.interval + 0.5
+                        udp_writer.write_silence(silence_duration)
+                        print(f"Silence fill streamed for {silence_duration:.1f}s (interval {args.interval}s + padding 0.5s)")
                     except Exception as exc:
                         print(f"Silence fill failed: {type(exc).__name__}: {exc}")
                         time.sleep(args.interval)

@@ -1,0 +1,13 @@
+# Large files excluded from git (added to repo .gitignore)
+training_data/flux_styles/**/*.jpg
+training_data/flux_styles/**/*.png
+training_data/flux_styles/**/*.jpeg
+training_data/musicgen_styles/**/*.wav
+training_data/musicgen_styles/**/*.mp3
+training_data/musicgen_styles/**/*.flac
+trained_loras/**/*.safetensors
+trained_loras/**/*.bin
+trained_loras/**/checkpoint_*
+*.ckpt
+*.pt
+*.pth
