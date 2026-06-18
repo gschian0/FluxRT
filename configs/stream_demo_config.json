@@ -1,15 +1,17 @@
 {
-    "default_prompt": "Turn this into oil on canvas art in style of Wassily Kandinsky.",
+    "default_prompt": "low-resolution video game screenshot in the style of 3DMVMKR, illustration in the style of SHNILLST",
     "default_steps": 1,
     "default_seed": 52,
     "models_path": "FLUX.2-klein-4B",
     "int8_models_path": "FLUX.2-klein-4B-int8",
     "resolution": {
-        "height": 256,
-        "width": 448
+        "height": 160,
+        "width": 288
     },
     "compile_models": false,
-    "enable_spatial_cache": false,
+    "enable_spatial_cache": true,
+    "use_lora": false,
+    "lora_weights_path": "lora/lora.safetensors",
     "enable_int8_quantization": true,
     "target_fps": null,
     "interpolation_exp": 1,

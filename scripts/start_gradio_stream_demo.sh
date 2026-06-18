@@ -12,11 +12,39 @@ fi
 
 source .venv/bin/activate
 
-pkill -f 'scripts/run_gradio_stream_demo.py' || true
-# Clear orphaned multiprocessing children from previous crashed runs.
-pkill -f '/home/gschi/FluxRT/.venv/bin/python -c from multiprocessing.spawn import spawn_main' || true
+clear_boot_state() {
+  echo "[boot-clear] stopping stale stream demo processes"
+  pkill -f 'scripts/run_gradio_stream_demo.py' || true
 
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  echo "[boot-clear] stopping orphaned multiprocessing children"
+  pkill -f '/home/gschi/FluxRT/.venv/bin/python -c from multiprocessing.spawn import spawn_main' || true
+
+  echo "[boot-clear] stopping stale inference/scheduler workers"
+  pkill -f 'model_inference_subprocess' || true
+  pkill -f 'output_scheduler_subprocess' || true
+
+  echo "[boot-clear] stopping stale virtual-cam writer on udp:5000"
+  # Target only rawvideo writer, not fanout reader.
+  pkill -f 'ffmpeg.*-f rawvideo.*udp://127.0.0.1:5000' || true
+
+  sleep 2
+
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    echo "[boot-clear] waiting for GPU compute workers to drain"
+    for _ in $(seq 1 30); do
+      gpu_procs="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | sed '/^\s*$/d' || true)"
+      if [[ -z "$gpu_procs" ]]; then
+        echo "[boot-clear] GPU is clear"
+        break
+      fi
+      sleep 1
+    done
+  fi
+}
+
+clear_boot_state
+
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128
 APP_PORT="${APP_PORT:-7861}"
 APP_HOST="${APP_HOST:-0.0.0.0}"
 STREAM_CONFIG_PATH="${STREAM_CONFIG_PATH:-configs/stream_demo_config.json}"

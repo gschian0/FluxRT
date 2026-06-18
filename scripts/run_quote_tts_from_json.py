@@ -85,11 +85,18 @@ class UdpAudioWriter:
         next_deadline = time.monotonic()
         for offset in range(0, len(pcm_bytes), chunk_size):
             chunk = pcm_bytes[offset: offset + chunk_size]
-            self.proc.stdin.write(chunk)
+            try:
+                self.proc.stdin.write(chunk)
+                self.proc.stdin.flush()  # Force flush to avoid buffering stalls
+            except (BrokenPipeError, OSError):
+                # UDP ffmpeg crashed, restart it
+                self.proc = self._start_ffmpeg()
+                self.proc.stdin.write(chunk)
+                self.proc.stdin.flush()
             frames = len(chunk) / bytes_per_frame
             next_deadline += frames / float(self.input_rate_hz)
             delay = next_deadline - time.monotonic()
-            if delay > 0:
+            if delay > 0.001:  # Only sleep if meaningful delay
                 time.sleep(delay)
 
     def write_wav(self, wav_path: Path) -> None:
@@ -190,11 +197,6 @@ def main() -> None:
     parser.add_argument("--refresh-threshold", type=int, default=3, help="Refresh when remaining quotes <= this")
     parser.add_argument("--refresh-count", type=int, default=30, help="How many quotes to generate on refresh")
     parser.add_argument("--repeat-on-empty", action="store_true", help="Repeat existing quotes when out and no refresh")
-    parser.add_argument(
-        "--no-silence-fill",
-        action="store_true",
-        help="Do not emit silence to UDP during interval gaps",
-    )
     args = parser.parse_args()
 
     quote_path = Path(args.quotes)
@@ -291,17 +293,8 @@ def main() -> None:
                 return
 
             if args.interval > 0:
-                if udp_writer is not None and not args.no_silence_fill:
-                    try:
-                        # Add extra silence padding (0.5s) to prevent amix discontinuities
-                        silence_duration = args.interval + 0.5
-                        udp_writer.write_silence(silence_duration)
-                        print(f"Silence fill streamed for {silence_duration:.1f}s (interval {args.interval}s + padding 0.5s)")
-                    except Exception as exc:
-                        print(f"Silence fill failed: {type(exc).__name__}: {exc}")
-                        time.sleep(args.interval)
-                else:
-                    time.sleep(args.interval)
+                # Sleep between quotes. UDP subprocess maintains continuous stream in background.
+                time.sleep(args.interval)
 
             if not args.loop and index >= len(quotes) and not args.repeat_on_empty and not args.auto_refresh:
                 return

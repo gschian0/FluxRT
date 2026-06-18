@@ -1,7 +1,9 @@
 import argparse
+from collections import deque
 import os
 import random
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -14,7 +16,7 @@ from fluxrt import StreamProcessor
 from fluxrt.utils import crop_maximal_rectangle
 
 default_prompt = "claymation"
-default_stream_url = "https://30a-tv.com/feeds/masters/30atv.m3u8"
+default_stream_url = "https://streamer1.connectto.com/AABC_WEB_1201/index.m3u8"
 default_music_radio_url = "http://london-dedicated.myautodj.com:8862/stream"
 default_music_station_name = "AutoDJ London"
 
@@ -58,8 +60,269 @@ udp_writer = None
 udp_writer_lock = threading.Lock()
 udp_writer_dims = (0, 0)
 
+broadcast_sender_thread = None
+broadcast_sender_lock = threading.Lock()
+broadcast_send_queue = deque(maxlen=8)
+broadcast_send_queue_lock = threading.Lock()
+
 quote_tts_proc = None
 quote_tts_lock = threading.Lock()
+
+stream_relay_proc = None
+stream_relay_lock = threading.Lock()
+stream_relay_input_url = ""
+stream_relay_output_url = "udp://127.0.0.1:5010?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1"
+
+processed_valid_streak = 0
+processed_valid_streak_lock = threading.Lock()
+broadcast_ready = False
+broadcast_ready_lock = threading.Lock()
+processed_frame_buffer = deque()
+processed_frame_buffer_lock = threading.Lock()
+required_processed_streak = 20
+lead_buffer_seconds = 0.8
+last_good_broadcast_frame = None
+last_good_broadcast_frame_lock = threading.Lock()
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _is_process_running(pattern: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", pattern],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _is_music_stream_running() -> bool:
+    return _is_process_running("run_musicgen_radio_plus_musicGEN.py")
+
+
+def _is_quote_voice_running() -> bool:
+    if _quote_tts_is_running():
+        return True
+    return _is_process_running("run_quote_tts_from_json.py")
+
+
+def _is_audio_mix_bus_running() -> bool:
+    pid_file = "/tmp/fluxrt-audio-mix.pid"
+    try:
+        if os.path.isfile(pid_file):
+            raw = open(pid_file, "r", encoding="utf-8", errors="ignore").read().strip()
+            if raw.isdigit() and _pid_is_running(int(raw)):
+                return True
+    except Exception:
+        pass
+    return _is_process_running("/tmp/fluxrt-audio-mix-loop.sh")
+
+
+def _status_light_html(label: str, running: bool) -> str:
+    color = "#16a34a" if running else "#dc2626"
+    state = "RUNNING" if running else "STOPPED"
+    return (
+        "<div style='display:flex;align-items:center;gap:8px;padding:6px 10px;"
+        "border:1px solid #e5e7eb;border-radius:10px;background:#ffffff;'>"
+        f"<span style='width:12px;height:12px;border-radius:50%;background:{color};"
+        "display:inline-block;'></span>"
+        f"<span style='font-size:13px;'><strong>{label}</strong>: {state}</span>"
+        "</div>"
+    )
+
+
+def poll_audio_service_lights():
+    music_running = _is_music_stream_running()
+    quote_running = _is_quote_voice_running()
+    bus_running = _is_audio_mix_bus_running()
+    return (
+        _status_light_html("Music", music_running),
+        _status_light_html("Quote Voice", quote_running),
+        _status_light_html("Audio Bus", bus_running),
+    )
+
+
+def start_audio_mix_bus_ui(
+    music_mix_volume: float,
+    tts_mix_volume: float,
+    audio_bitrate: str = "128k",
+):
+    env = os.environ.copy()
+    env["MUSIC_MIX_VOLUME"] = str(float(music_mix_volume))
+    env["TTS_MIX_VOLUME"] = str(float(tts_mix_volume))
+    env["AUDIO_BITRATE"] = (audio_bitrate or "128k").strip()
+    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/streaming/start_audio_mix_bus.sh"]
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        msg = (result.stderr or result.stdout or "audio bus start failed").strip()
+        set_status(f"audio bus start failed: {msg}")
+        return f"audio bus start failed: {msg}"
+    set_status("audio mix bus started (udp 5006)")
+    return (result.stdout or "audio mix bus started").strip()
+
+
+def stop_audio_mix_bus_ui():
+    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/streaming/stop_audio_mix_bus.sh"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    msg = (result.stdout or result.stderr or "audio bus stopped").strip()
+    set_status("audio mix bus stopped")
+    return msg
+
+
+def _reset_broadcast_gate(reason: str | None = None):
+    global processed_valid_streak, broadcast_ready
+    with processed_valid_streak_lock:
+        processed_valid_streak = 0
+    with broadcast_ready_lock:
+        broadcast_ready = False
+    with processed_frame_buffer_lock:
+        processed_frame_buffer.clear()
+    with broadcast_send_queue_lock:
+        broadcast_send_queue.clear()
+    if reason:
+        set_status(f"broadcast gated: {reason}")
+
+
+def _broadcast_sender_loop():
+    while True:
+        payload = None
+        with broadcast_send_queue_lock:
+            if broadcast_send_queue:
+                payload = broadcast_send_queue.popleft()
+        if payload is None:
+            time.sleep(0.002)
+            continue
+
+        frame_to_send, fps = payload
+        _write_to_udp(frame_to_send, fps=int(max(1, fps)))
+
+
+def _ensure_broadcast_sender():
+    global broadcast_sender_thread
+    with broadcast_sender_lock:
+        if broadcast_sender_thread is not None and broadcast_sender_thread.is_alive():
+            return
+        broadcast_sender_thread = threading.Thread(
+            target=_broadcast_sender_loop,
+            daemon=True,
+        )
+        broadcast_sender_thread.start()
+
+
+def _enqueue_broadcast_frame(frame: np.ndarray, fps: float):
+    _ensure_broadcast_sender()
+    frame_copy = frame.copy()
+    with broadcast_send_queue_lock:
+        broadcast_send_queue.append((frame_copy, float(fps)))
+
+
+def _is_processed_frame_valid(frame: np.ndarray | None) -> bool:
+    return isinstance(frame, np.ndarray) and frame.size > 0 and not _is_zero_frame(frame)
+
+
+def _target_buffer_frames(fps: float) -> int:
+    fps_val = max(1.0, float(fps or 25.0))
+    return max(8, int(round(fps_val * lead_buffer_seconds)))
+
+
+def _set_broadcast_ready(ready: bool):
+    global broadcast_ready
+    with broadcast_ready_lock:
+        broadcast_ready = bool(ready)
+
+
+def _is_broadcast_ready() -> bool:
+    with broadcast_ready_lock:
+        return broadcast_ready
+
+
+def _can_start_fanout_now() -> bool:
+    if _is_broadcast_ready():
+        return True
+    if not is_filter_enabled() or not _workers_alive():
+        return False
+    with frame_lock:
+        frame = current_processed_frame
+    return _is_processed_frame_valid(to_bgr(frame) if frame is not None else None)
+
+
+def _push_processed_for_broadcast(processed_frame: np.ndarray | None, fps: float):
+    global processed_valid_streak, last_good_broadcast_frame
+
+    if not is_filter_enabled():
+        _reset_broadcast_gate("filter is off")
+        return
+
+    if not _workers_alive():
+        _reset_broadcast_gate("workers not healthy")
+        return
+
+    if not _is_processed_frame_valid(processed_frame):
+        with processed_valid_streak_lock:
+            processed_valid_streak = 0
+        _set_broadcast_ready(False)
+        # Keep the stream alive through short upstream stalls by replaying
+        # the most recent valid real frame instead of dropping the publisher.
+        with last_good_broadcast_frame_lock:
+            fallback_frame = (
+                None
+                if last_good_broadcast_frame is None
+                else last_good_broadcast_frame.copy()
+            )
+        if fallback_frame is None:
+            with frame_lock:
+                current_input = current_input_frame
+            if current_input is not None:
+                fallback_frame = to_bgr(current_input)
+        if fallback_frame is not None:
+            _enqueue_broadcast_frame(fallback_frame, fps=float(fps))
+        return
+
+    with processed_valid_streak_lock:
+        processed_valid_streak += 1
+        streak = processed_valid_streak
+
+    target = _target_buffer_frames(fps)
+    with processed_frame_buffer_lock:
+        processed_frame_buffer.append(processed_frame.copy())
+        while len(processed_frame_buffer) > target * 4:
+            processed_frame_buffer.popleft()
+        buffered = len(processed_frame_buffer)
+
+    with last_good_broadcast_frame_lock:
+        last_good_broadcast_frame = processed_frame.copy()
+
+    if streak < required_processed_streak:
+        _set_broadcast_ready(False)
+        _enqueue_broadcast_frame(processed_frame, fps=float(fps))
+        return
+
+    if buffered < target:
+        _set_broadcast_ready(False)
+        _enqueue_broadcast_frame(processed_frame, fps=float(fps))
+        return
+
+    _set_broadcast_ready(True)
+    with processed_frame_buffer_lock:
+        if not processed_frame_buffer:
+            _set_broadcast_ready(False)
+            return
+        frame_to_send = processed_frame_buffer.popleft()
+    with last_good_broadcast_frame_lock:
+        last_good_broadcast_frame = frame_to_send.copy()
+    _enqueue_broadcast_frame(frame_to_send, fps=float(fps))
 
 
 def _get_udp_writer(width, height, fps=25):
@@ -74,7 +337,10 @@ def _get_udp_writer(width, height, fps=25):
             udp_writer = None
             # Kill any orphaned ffmpeg writers left over from previous sessions
             import subprocess as _sp
-            _sp.run(['pkill', '-f', 'ffmpeg.*udp://127.0.0.1:5000'], capture_output=True)
+            _sp.run(
+                ['pkill', '-f', 'ffmpeg.*-f rawvideo.*udp://127.0.0.1:5000'],
+                capture_output=True,
+            )
 
         if udp_writer is None:
             cmd = [
@@ -95,6 +361,10 @@ def _get_udp_writer(width, height, fps=25):
                 '-sc_threshold', '0',
                 '-x264-params', 'repeat-headers=1:keyint=50:min-keyint=50:scenecut=0',
                 '-pix_fmt', 'yuv420p',
+                '-mpegts_flags', '+resend_headers',
+                '-muxdelay', '0',
+                '-muxpreload', '0',
+                '-flush_packets', '1',
                 '-f', 'mpegts',
                 'udp://127.0.0.1:5000?pkt_size=1316'
             ]
@@ -159,6 +429,91 @@ def _workers_alive() -> bool:
         return False
 
 
+def _cleanup_orphan_local_workers() -> None:
+    """Best-effort cleanup for local spawned workers after recovery failures."""
+    parent_pid = os.getpid()
+    try:
+        ps_out = subprocess.check_output(
+            ["ps", "-eo", "pid=,ppid=,cmd="], text=True
+        )
+    except Exception:
+        return
+
+    victims: list[int] = []
+    for row in ps_out.splitlines():
+        parts = row.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except Exception:
+            continue
+        cmd = parts[2]
+        if ppid != parent_pid:
+            continue
+        if "multiprocessing.spawn import spawn_main" not in cmd:
+            continue
+        victims.append(pid)
+
+    for pid in victims:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+
+    if victims:
+        time.sleep(0.3)
+        for pid in victims:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+
+
+def _cleanup_global_orphan_workers() -> None:
+    """Reap stale worker subprocesses orphaned to init (PPID 1)."""
+    try:
+        ps_out = subprocess.check_output(
+            ["ps", "-eo", "pid=,ppid=,cmd="], text=True
+        )
+    except Exception:
+        return
+
+    victims: list[int] = []
+    for row in ps_out.splitlines():
+        parts = row.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except Exception:
+            continue
+        cmd = parts[2]
+        if ppid != 1:
+            continue
+        if "/home/gschi/FluxRT/.venv/bin/python3" not in cmd:
+            continue
+        if "multiprocessing.spawn import spawn_main" not in cmd:
+            continue
+        victims.append(pid)
+
+    for pid in victims:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+
+    if victims:
+        time.sleep(0.3)
+        for pid in victims:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+
+
 def reset_processor(reason: str):
     global stream_processor, input_tensor, output_tensor, resolution
     set_status(f"recovering: {reason}")
@@ -167,6 +522,12 @@ def reset_processor(reason: str):
             stream_processor.stop()
         except Exception:
             pass
+
+    # If a previous worker died unexpectedly, stop() can leave extra local
+    # children behind; reap them to avoid sustained CPU slowdown.
+    _cleanup_orphan_local_workers()
+    _cleanup_global_orphan_workers()
+
     stream_processor = None
     input_tensor = None
     output_tensor = None
@@ -240,6 +601,10 @@ def set_filter_enabled(enabled: bool):
     global filter_enabled
     with filter_enabled_lock:
         filter_enabled = bool(enabled)
+    if not filter_enabled:
+        _reset_broadcast_gate("filter is off")
+    else:
+        _reset_broadcast_gate("warming processed output")
     set_status(f"filter: {'on' if filter_enabled else 'off'}")
 
 
@@ -494,10 +859,31 @@ def stop_musicgen_stream():
     return msg
 
 
-def start_fanout_with_music(enable_youtube: bool, enable_twitch: bool, enable_facebook: bool, enable_quote_voice: bool):
+def refresh_audio_mix_bus_status():
+    return "audio bus: running (udp://127.0.0.1:5006)" if _is_audio_mix_bus_running() else "audio bus: stopped"
+
+
+def start_fanout_with_music(
+    enable_youtube: bool,
+    enable_twitch: bool,
+    enable_facebook: bool,
+    enable_quote_voice: bool,
+    use_audio_bus: bool,
+    music_mix_volume: float,
+    tts_mix_volume: float,
+    fanout_audio_bitrate: str,
+):
     if not (enable_youtube or enable_twitch or enable_facebook):
         set_status("fanout start skipped: no platform enabled")
         return "fanout start skipped: enable at least one platform"
+
+    if not _can_start_fanout_now():
+        msg = (
+            "fanout start blocked: waiting for AI-filtered processed frames "
+            "(no passthrough allowed)"
+        )
+        set_status(msg)
+        return msg
 
     env_path = os.path.join(_repo_root(), "scripts", "streaming", "rtmp_targets.env")
     env_targets = {
@@ -540,15 +926,31 @@ def start_fanout_with_music(enable_youtube: bool, enable_twitch: bool, enable_fa
     enable_youtube_str = "1" if enable_youtube else "0"
     enable_twitch_str = "1" if enable_twitch else "0"
     enable_facebook_str = "1" if enable_facebook else "0"
-    enable_quote_voice_str = "1" if enable_quote_voice else "0"
+    selected_audio_bitrate = (fanout_audio_bitrate or "96k").strip()
+
+    if use_audio_bus:
+        bus_msg = start_audio_mix_bus_ui(
+            music_mix_volume=music_mix_volume,
+            tts_mix_volume=tts_mix_volume,
+            audio_bitrate=selected_audio_bitrate,
+        )
+        if "failed" in bus_msg.lower():
+            return f"fanout start blocked: audio bus requested but failed to start ({bus_msg})"
+
+    enable_quote_voice_str = "0" if use_audio_bus else ("1" if enable_quote_voice else "0")
+    audio_input_url = "udp://127.0.0.1:5006?pkt_size=1316" if use_audio_bus else "udp://127.0.0.1:5002?pkt_size=1316"
 
     launch_cmd = (
         "cd /home/gschi/FluxRT && "
+        "scripts/streaming/stop_mediamtx_fanout.sh || true; "
         "scripts/streaming/stop_rtmp_fanout.sh || true; "
         f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} ENABLE_TTS_OVERLAY={enable_quote_voice_str} AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url "
-        "STARTUP_BARS_SECONDS=0 WAIT_FOR_VIDEO_READY=0 "
-        "AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316' "
-        "TTS_INPUT_URL='udp://127.0.0.1:5004?pkt_size=1316' "
+        "INPUT_URL='udp://127.0.0.1:5000?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1' "
+        f"AUDIO_INPUT_URL='{audio_input_url}' "
+        "TTS_INPUT_URL='udp://127.0.0.1:5004?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1' "
+        f"MUSIC_MIX_VOLUME={float(music_mix_volume)} TTS_MIX_VOLUME={float(tts_mix_volume)} "
+        "FPS=8 OUTPUT_WIDTH=288 OUTPUT_HEIGHT=160 VIDEO_BITRATE=550k VIDEO_MAXRATE=550k VIDEO_BUFSIZE=1100k "
+        f"AUDIO_BITRATE={selected_audio_bitrate} "
         "scripts/streaming/start_rtmp_fanout.sh"
     )
     try:
@@ -564,12 +966,32 @@ def start_fanout_with_music(enable_youtube: bool, enable_twitch: bool, enable_fa
         return f"fanout launch failed: {msg}"
 
     launch_msg = (result.stdout or "fanout launch started").strip()
-    set_status("fanout started (auto-reconnect loop)")
+    set_status("fanout started (direct RTMP loop)")
+    if use_audio_bus:
+        return launch_msg + " (direct fanout + audio bus on udp 5006)"
     return launch_msg + (" (quote voice mix enabled)" if enable_quote_voice else "")
 
 
-def start_fanout_with_music_ui(enable_youtube: bool, enable_twitch: bool, enable_facebook: bool, enable_quote_voice: bool):
-    msg = start_fanout_with_music(enable_youtube, enable_twitch, enable_facebook, enable_quote_voice)
+def start_fanout_with_music_ui(
+    enable_youtube: bool,
+    enable_twitch: bool,
+    enable_facebook: bool,
+    enable_quote_voice: bool,
+    use_audio_bus: bool,
+    music_mix_volume: float,
+    tts_mix_volume: float,
+    fanout_audio_bitrate: str,
+):
+    msg = start_fanout_with_music(
+        enable_youtube,
+        enable_twitch,
+        enable_facebook,
+        enable_quote_voice,
+        use_audio_bus,
+        music_mix_volume,
+        tts_mix_volume,
+        fanout_audio_bitrate,
+    )
     stamp = time.strftime("%H:%M:%S")
     ui_msg = f"[{stamp}] {msg}"
     return ui_msg, ui_msg
@@ -775,19 +1197,19 @@ def poll_musicgen_preview():
     return gr.update(value=now_value), gr.update(value=edit_value), now_text, edit_text
 
 
-def render_frame(frame_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def render_frame(frame_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray, bool]:
     if frame_bgr is None:
-        return frame_bgr, frame_bgr
+        return frame_bgr, frame_bgr, False
 
     frame_with_overlay = apply_overlay(frame_bgr) if is_overlay_enabled() else frame_bgr
     if is_filter_enabled():
         try:
             _, processed = process_frame(frame_with_overlay)
-            return frame_with_overlay, processed
+            return frame_with_overlay, processed, True
         except Exception as exc:
             set_status(f"filter degraded: {exc}")
-            return frame_with_overlay, frame_with_overlay
-    return frame_with_overlay, frame_with_overlay
+            return frame_with_overlay, frame_with_overlay, False
+    return frame_with_overlay, frame_with_overlay, False
 
 def to_rgb(frame):
     if frame is None:
@@ -907,6 +1329,7 @@ def _local_video_loop(video_path: str, video_id: int):
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
     frame_time = 1.0 / fps
+    _reset_broadcast_gate("source switched")
     set_status("local live")
 
     try:
@@ -922,9 +1345,7 @@ def _local_video_loop(video_path: str, video_id: int):
 
             start = time.time()
             try:
-                input_frame, processed = render_frame(frame)
-                udp_frame = input_frame if _is_zero_frame(processed) else processed
-                _write_to_udp(udp_frame, fps=int(fps))
+                input_frame, processed, filter_active = render_frame(frame)
             except Exception as exc:
                 set_status(f"local processing error: {exc}")
                 time.sleep(0.1)
@@ -934,25 +1355,135 @@ def _local_video_loop(video_path: str, video_id: int):
                 current_input_frame = to_rgb(input_frame)
                 current_processed_frame = to_rgb(processed)
 
+            candidate = processed if filter_active else None
+            _push_processed_for_broadcast(candidate, fps=float(fps))
+
             time.sleep(max(0, frame_time - (time.time() - start)))
     finally:
         cap.release()
 
 
 def _open_stream_capture(stream_url: str):
-    cap = cv2.VideoCapture(stream_url)
+    # Prefer FFmpeg backend first for stream URLs.
+    cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
     if cap.isOpened():
         return cap
 
     cap.release()
-    return cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+    return cv2.VideoCapture(stream_url)
+
+
+def _start_stream_relay_if_needed(stream_url: str) -> str:
+    global stream_relay_proc, stream_relay_input_url
+
+    # Local files and direct UDP sources do not need relay.
+    if stream_url.startswith("udp://") or os.path.isfile(stream_url):
+        return stream_url
+
+    with stream_relay_lock:
+        if (
+            stream_relay_proc is not None
+            and stream_relay_proc.poll() is None
+            and stream_relay_input_url == stream_url
+        ):
+            return stream_relay_output_url
+
+        if stream_relay_proc is not None:
+            try:
+                stream_relay_proc.terminate()
+                stream_relay_proc.wait(timeout=2)
+            except Exception:
+                try:
+                    stream_relay_proc.kill()
+                except Exception:
+                    pass
+            stream_relay_proc = None
+
+        try:
+            # Keep this relay resilient to transient HTTPS/TLS source drops.
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-fflags",
+                "+genpts+discardcorrupt+igndts",
+                "-use_wallclock_as_timestamps",
+                "1",
+                "-reconnect",
+                "1",
+                "-reconnect_streamed",
+                "1",
+                "-reconnect_at_eof",
+                "1",
+                "-reconnect_on_network_error",
+                "1",
+                "-reconnect_delay_max",
+                "2",
+                "-rw_timeout",
+                "15000000",
+                "-i",
+                stream_url,
+                "-an",
+                "-c:v",
+                "copy",
+                "-muxdelay",
+                "0",
+                "-muxpreload",
+                "0",
+                "-max_interleave_delta",
+                "0",
+                "-flush_packets",
+                "1",
+                "-f",
+                "mpegts",
+                stream_relay_output_url,
+            ]
+            stream_relay_proc = subprocess.Popen(cmd)
+            # If relay exits immediately (e.g. 404 upstream), avoid locking
+            # capture onto a dead UDP relay endpoint.
+            time.sleep(0.15)
+            if stream_relay_proc.poll() is not None:
+                stream_relay_proc = None
+                stream_relay_input_url = ""
+                set_status("stream relay failed, using direct source")
+                return stream_url
+            stream_relay_input_url = stream_url
+            set_status("stream relay live")
+            return stream_relay_output_url
+        except Exception as exc:
+            set_status(f"stream relay unavailable: {exc}")
+            return stream_url
+
+
+def _stop_stream_relay():
+    global stream_relay_proc, stream_relay_input_url
+    with stream_relay_lock:
+        proc = stream_relay_proc
+        stream_relay_proc = None
+        stream_relay_input_url = ""
+
+    if proc is not None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
 
 def _stream_loop(stream_url: str, video_id: int):
     global current_input_frame, current_processed_frame
-    cap = _open_stream_capture(stream_url)
+    capture_url = _start_stream_relay_if_needed(stream_url)
+    cap = _open_stream_capture(capture_url)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     frame_time = 1.0 / 25
+    consecutive_failures = 0
+    last_reopen_at = 0.0
+    switched_to_fallback = False
+    _reset_broadcast_gate("source switched")
 
     try:
         while True:
@@ -962,27 +1493,58 @@ def _stream_loop(stream_url: str, video_id: int):
 
             if not cap.isOpened():
                 set_status("stream reconnecting")
-                time.sleep(0.5)
-                cap.release()
-                cap = _open_stream_capture(stream_url)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                consecutive_failures += 1
+                if (
+                    consecutive_failures >= 120
+                    and not switched_to_fallback
+                    and stream_url != default_stream_url
+                ):
+                    switched_to_fallback = True
+                    stream_url = default_stream_url
+                    _stop_stream_relay()
+                    set_status("stream source unavailable, switched to default")
+                    consecutive_failures = 0
+                    last_reopen_at = 0.0
+                if consecutive_failures >= 20 and (time.time() - last_reopen_at) >= 2.0:
+                    last_reopen_at = time.time()
+                    cap.release()
+                    capture_url = _start_stream_relay_if_needed(stream_url)
+                    cap = _open_stream_capture(capture_url)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    consecutive_failures = 0
+                time.sleep(0.05)
                 continue
 
             ok, frame = cap.read()
             if not ok:
                 set_status("stream reconnecting")
-                time.sleep(0.5)
-                cap.release()
-                cap = _open_stream_capture(stream_url)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                consecutive_failures += 1
+                if (
+                    consecutive_failures >= 120
+                    and not switched_to_fallback
+                    and stream_url != default_stream_url
+                ):
+                    switched_to_fallback = True
+                    stream_url = default_stream_url
+                    _stop_stream_relay()
+                    set_status("stream source unavailable, switched to default")
+                    consecutive_failures = 0
+                    last_reopen_at = 0.0
+                if consecutive_failures >= 20 and (time.time() - last_reopen_at) >= 2.0:
+                    last_reopen_at = time.time()
+                    cap.release()
+                    capture_url = _start_stream_relay_if_needed(stream_url)
+                    cap = _open_stream_capture(capture_url)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    consecutive_failures = 0
+                time.sleep(0.05)
                 continue
 
             set_status("stream live")
+            consecutive_failures = 0
             start = time.time()
             try:
-                input_frame, processed = render_frame(frame)
-                udp_frame = input_frame if _is_zero_frame(processed) else processed
-                _write_to_udp(udp_frame, fps=25)
+                input_frame, processed, filter_active = render_frame(frame)
             except Exception as exc:
                 set_status(f"stream processing error: {exc}")
                 time.sleep(0.1)
@@ -991,6 +1553,9 @@ def _stream_loop(stream_url: str, video_id: int):
             with frame_lock:
                 current_input_frame = to_rgb(input_frame)
                 current_processed_frame = to_rgb(processed)
+
+            candidate = processed if filter_active else None
+            _push_processed_for_broadcast(candidate, fps=25.0)
 
             time.sleep(max(0, frame_time - (time.time() - start)))
     finally:
@@ -1041,6 +1606,8 @@ def stop_video_source():
     global current_video_id
     with current_video_id_lock:
         current_video_id += 1
+    _stop_stream_relay()
+    _reset_broadcast_gate("source stopped")
     set_status("idle")
 
 
@@ -1090,10 +1657,9 @@ def process_webcam(frame):
     if frame is None:
         return None
 
-    _, processed = render_frame(to_bgr(frame))
-
-    udp_frame = frame if _is_zero_frame(processed) else processed
-    _write_to_udp(udp_frame.copy(), fps=25)
+    _, processed, filter_active = render_frame(to_bgr(frame))
+    candidate = processed if filter_active else None
+    _push_processed_for_broadcast(candidate, fps=25.0)
     return to_rgb(processed)
 
 
@@ -1113,21 +1679,43 @@ def main():
     parser.add_argument(
         "--server-name", type=str, default="0.0.0.0", help="Bind address"
     )
+    parser.add_argument(
+        "--local-video",
+        type=str,
+        default="",
+        help="Optional local video path to start immediately instead of stream URL",
+    )
     args, _ = parser.parse_known_args()
     use_int8 = args.int8
     stream_config_path = args.config_path
 
+    # Clean stale workers left by prior crashes/restarts before initializing.
+    _cleanup_global_orphan_workers()
+
+    # Preload processor before UI launch so processed frames appear immediately
+    # when a source starts (matches baseline run_gradio_demo behavior).
+    try:
+        set_status("initializing processor")
+        get_processor()
+        set_status("idle")
+    except Exception as exc:
+        set_status(f"processor init failed: {exc}")
+
     global repo_catalog_paths
-    set_status("idle")
+    if get_status() == "initializing processor":
+        set_status("idle")
     repo_catalog_paths = discover_repo_catalogs()
     catalog_choices = list(repo_catalog_paths.keys())
     default_catalog = "us_30a" if "us_30a" in repo_catalog_paths else (catalog_choices[0] if catalog_choices else None)
     initial_music_station_choices = load_music_stations_from_repo_files()
     default_music_choice = initial_music_station_choices[0] if initial_music_station_choices else default_music_station_name
+    startup_local_video = (args.local_video or "").strip()
+    startup_with_local = bool(startup_local_video and os.path.isfile(startup_local_video))
+
     with gr.Blocks() as demo:
         mode = gr.Radio(
             choices=["webcam", "local", "stream"],
-            value="stream",
+            value="local" if startup_with_local else "stream",
             label="Mode",
         )
 
@@ -1151,7 +1739,7 @@ def main():
                 )
 
             with gr.Column(visible=True) as source_input_col:
-                with gr.Column(visible=False) as local_controls:
+                with gr.Column(visible=startup_with_local) as local_controls:
                     video_file = gr.File(
                         label="Choose local video",
                         file_count="single",
@@ -1159,7 +1747,7 @@ def main():
                         type="filepath",
                     )
 
-                with gr.Column(visible=True) as stream_controls:
+                with gr.Column(visible=(not startup_with_local)) as stream_controls:
                     with gr.Row():
                         catalog_choice = gr.Dropdown(
                             label="Catalog Group",
@@ -1196,7 +1784,13 @@ def main():
                             placeholder="#EXTM3U\n#EXTINF:-1,Channel Name\nhttps://example.com/live.m3u8",
                         )
 
-            prompt = gr.Textbox(value=default_prompt, label="Prompt", lines=3)
+            prompt = gr.Textbox(
+                value=default_prompt,
+                label="Prompt",
+                lines=3,
+                interactive=True,
+            )
+            prompt_apply_btn = gr.Button("Enter New Prompt")
             filter_toggle = gr.Checkbox(value=True, label="Enable AI Filter")
             with gr.Row():
                 overlay_on_btn = gr.Button("Overlay On")
@@ -1302,6 +1896,40 @@ def main():
                 fanout_enable_twitch = gr.Checkbox(value=True, label="Fanout Twitch")
                 fanout_enable_facebook = gr.Checkbox(value=False, label="Fanout Facebook")
                 fanout_enable_quote_voice = gr.Checkbox(value=True, label="Mix Quote Voice")
+                fanout_use_audio_bus = gr.Checkbox(value=True, label="Use Audio Bus (udp 5006)")
+
+            with gr.Accordion("Audio Bus", open=False):
+                with gr.Row():
+                    audio_bus_music_volume = gr.Slider(
+                        label="Bus Music Volume",
+                        minimum=0.0,
+                        maximum=2.0,
+                        value=0.65,
+                        step=0.05,
+                    )
+                    audio_bus_tts_volume = gr.Slider(
+                        label="Bus Quote Volume",
+                        minimum=0.0,
+                        maximum=4.0,
+                        value=2.8,
+                        step=0.1,
+                    )
+                    audio_bus_bitrate = gr.Dropdown(
+                        label="Bus Audio Bitrate",
+                        choices=["96k", "128k", "160k", "192k"],
+                        value="128k",
+                        allow_custom_value=False,
+                        interactive=True,
+                    )
+                with gr.Row():
+                    audio_bus_start_btn = gr.Button("Start Audio Bus")
+                    audio_bus_stop_btn = gr.Button("Stop Audio Bus")
+                audio_bus_status = gr.Textbox(label="Audio Bus Status", value=refresh_audio_mix_bus_status(), lines=2)
+
+            with gr.Row():
+                music_status_light = gr.HTML(_status_light_html("Music", False))
+                quote_status_light = gr.HTML(_status_light_html("Quote Voice", False))
+                audio_bus_status_light = gr.HTML(_status_light_html("Audio Bus", False))
 
             fanout_status = gr.Textbox(label="Fanout Status", value="idle", lines=3)
             musicgen_status = gr.Textbox(label="MusicGen Status", value="idle", lines=3)
@@ -1382,6 +2010,7 @@ def main():
                 sources=["upload"],
                 image_mode="RGB",
             )
+            ref_image_apply_btn = gr.Button("Apply Image Prompt")
 
         musicgen_timer = gr.Timer(value=2.0, active=True)
 
@@ -1412,7 +2041,8 @@ def main():
         if default_catalog is not None:
             initial_channels_update, initial_url_update = load_repo_catalog_choice(default_catalog)
             channel_choice.value = initial_channels_update["value"]
-            if "value" in initial_url_update:
+            # Keep the explicit default URL unless the textbox is empty.
+            if "value" in initial_url_update and not (stream_url.value or "").strip():
                 stream_url.value = initial_url_update["value"]
 
         catalog_choice.change(
@@ -1458,7 +2088,14 @@ def main():
             outputs=[source_input, source_output, source_status],
         )
 
-        prompt.change(set_prompt, inputs=prompt, outputs=None)
+        prompt_apply_btn.click(
+            set_prompt,
+            inputs=[prompt],
+            outputs=None,
+        )
+
+        # Prompt auto-change updates can occasionally arrive as empty queue
+        # payloads; use explicit apply action above for stability.
         filter_toggle.change(set_filter_enabled, inputs=filter_toggle, outputs=None)
         overlay_on_btn.click(lambda: set_overlay_enabled(True), outputs=None)
         overlay_off_btn.click(lambda: set_overlay_enabled(False), outputs=None)
@@ -1487,8 +2124,28 @@ def main():
 
         fanout_music_btn.click(
             start_fanout_with_music_ui,
-            inputs=[fanout_enable_youtube, fanout_enable_twitch, fanout_enable_facebook, fanout_enable_quote_voice],
+            inputs=[
+                fanout_enable_youtube,
+                fanout_enable_twitch,
+                fanout_enable_facebook,
+                fanout_enable_quote_voice,
+                fanout_use_audio_bus,
+                audio_bus_music_volume,
+                audio_bus_tts_volume,
+                audio_bus_bitrate,
+            ],
             outputs=[fanout_status, musicgen_status],
+        )
+
+        audio_bus_start_btn.click(
+            start_audio_mix_bus_ui,
+            inputs=[audio_bus_music_volume, audio_bus_tts_volume, audio_bus_bitrate],
+            outputs=[audio_bus_status],
+        )
+
+        audio_bus_stop_btn.click(
+            stop_audio_mix_bus_ui,
+            outputs=[audio_bus_status],
         )
 
         quote_generate_btn.click(
@@ -1546,11 +2203,30 @@ def main():
             outputs=[musicgen_audio_now, musicgen_audio_edit, musicgen_now_status, musicgen_edit_status],
         )
 
-        ref_image_input.change(
+        musicgen_timer.tick(
+            poll_audio_service_lights,
+            outputs=[music_status_light, quote_status_light, audio_bus_status_light],
+        )
+
+        musicgen_timer.tick(
+            refresh_audio_mix_bus_status,
+            outputs=[audio_bus_status],
+        )
+
+        # Reference image updates are applied manually when needed to avoid
+        # empty-input queue events crashing the handler.
+        ref_image_apply_btn.click(
             set_reference_image_ui,
-            inputs=ref_image_input,
+            inputs=[ref_image_input],
             outputs=None,
         )
+
+    # Ensure a source starts even in headless/no-browser sessions.
+    if startup_with_local:
+        start_local_video(startup_local_video)
+        set_status("local live")
+    else:
+        start_stream_video(default_stream_url)
 
     demo.queue(default_concurrency_limit=1).launch(
         server_name=args.server_name,
