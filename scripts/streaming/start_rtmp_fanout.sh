@@ -12,17 +12,17 @@ ENV_FILE="${1:-scripts/streaming/rtmp_targets.env}"
 INPUT_URL="${INPUT_URL:-udp://127.0.0.1:5000?pkt_size=1316}"
 LOG_FILE="${LOG_FILE:-/tmp/fluxrt-rtmp-fanout.log}"
 PID_FILE="${PID_FILE:-/tmp/fluxrt-rtmp-fanout.pid}"
-VIDEO_BITRATE="${VIDEO_BITRATE:-1200k}"
+VIDEO_BITRATE="${VIDEO_BITRATE:-900k}"
 AUDIO_BITRATE="${AUDIO_BITRATE:-96k}"
 # 24fps: ffmpeg -fps_mode cfr will pad/duplicate frames to hold this rate
 # even when inference only produces 2-4fps — prevents Twitch UNSTABLE warning.
-FPS="${FPS:-12}"
+FPS="${FPS:-8}"
 # Keep keyframe interval at ~2s by default for ingest compatibility.
 GOP="${GOP:-$((FPS * 2))}"
 OUTPUT_WIDTH="${OUTPUT_WIDTH:-426}"
 OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-240}"
 VIDEO_MAXRATE="${VIDEO_MAXRATE:-${VIDEO_BITRATE}}"
-VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-2400k}"
+VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-1800k}"
 X264_PRESET="${X264_PRESET:-ultrafast}"
 ENABLE_YOUTUBE="${ENABLE_YOUTUBE:-1}"
 ENABLE_TWITCH="${ENABLE_TWITCH:-1}"
@@ -39,6 +39,9 @@ STARTUP_BARS_SECONDS="${STARTUP_BARS_SECONDS:-0}"
 STARTUP_BARS_EXTEND_SECONDS="${STARTUP_BARS_EXTEND_SECONDS:-5}"
 MAX_BARS_EXTENSIONS="${MAX_BARS_EXTENSIONS:-2}"
 WAIT_FOR_VIDEO_READY="${WAIT_FOR_VIDEO_READY:-0}"
+ENABLE_RECONNECT_BARS="${ENABLE_RECONNECT_BARS:-1}"
+RECONNECT_BARS_SECONDS="${RECONNECT_BARS_SECONDS:-4}"
+RECONNECT_SLEEP_SECONDS="${RECONNECT_SLEEP_SECONDS:-1}"
 
 ensure_udp_buffer_params() {
   local url="$1"
@@ -176,9 +179,12 @@ run_bars_segment() {
     >> "$LOG_FILE" 2>&1 || true
 }
 
-# Skip color bars preroll; go straight to live video input from UDP 5000.
-# Audio and TTS inputs will fallback to silence if not ready (optional_url mode).
-echo "[fanout] Skipping color bars; starting live feed immediately."
+if [[ "$STARTUP_BARS_SECONDS" -gt 0 ]]; then
+  echo "[fanout] Startup bars enabled (${STARTUP_BARS_SECONDS}s)." >> "$LOG_FILE"
+  run_bars_segment "$STARTUP_BARS_SECONDS"
+else
+  echo "[fanout] Startup bars disabled; starting live feed immediately." >> "$LOG_FILE"
+fi
 
 if [[ "$AUDIO_SOURCE_MODE" == "url" ]]; then
   AUDIO_INPUT_URL="$AUDIO_INPUT_URL_BUFFERED"
@@ -251,6 +257,7 @@ _run_fanout_loop() {
     if [[ "$ENABLE_TTS_OVERLAY" == "1" ]]; then
       ffmpeg -hide_banner -loglevel info \
         -fflags +genpts+discardcorrupt+igndts \
+        -err_detect ignore_err \
         -analyzeduration 2M -probesize 2M \
         -thread_queue_size 16384 \
         -i "$INPUT_URL" \
@@ -273,6 +280,7 @@ _run_fanout_loop() {
     else
       ffmpeg -hide_banner -loglevel info \
         -fflags +genpts+discardcorrupt+igndts \
+        -err_detect ignore_err \
         -analyzeduration 2M -probesize 2M \
         -thread_queue_size 16384 \
         -i "$INPUT_URL" \
@@ -298,8 +306,13 @@ _run_fanout_loop() {
       echo "[fanout] $(date -Is) stopped cleanly." >> "$LOG_FILE"
       break
     fi
-    echo "[fanout] $(date -Is) ffmpeg exited (code $EXIT_CODE) — reconnecting in 3s..." >> "$LOG_FILE"
-    sleep 3
+    echo "[fanout] $(date -Is) ffmpeg exited (code $EXIT_CODE)." >> "$LOG_FILE"
+    if [[ "$ENABLE_RECONNECT_BARS" == "1" ]] && [[ "$RECONNECT_BARS_SECONDS" -gt 0 ]]; then
+      echo "[fanout] $(date -Is) sending reconnect bars for ${RECONNECT_BARS_SECONDS}s." >> "$LOG_FILE"
+      run_bars_segment "$RECONNECT_BARS_SECONDS"
+    fi
+    echo "[fanout] $(date -Is) reconnecting in ${RECONNECT_SLEEP_SECONDS}s..." >> "$LOG_FILE"
+    sleep "$RECONNECT_SLEEP_SECONDS"
   done
 }
 
@@ -314,6 +327,9 @@ nohup bash -c "$(declare -f _run_fanout_loop); \
   FPS='$FPS'; GOP='$GOP'; X264_PRESET='$X264_PRESET'; \
   VIDEO_BITRATE='$VIDEO_BITRATE'; VIDEO_MAXRATE='$VIDEO_MAXRATE'; VIDEO_BUFSIZE='$VIDEO_BUFSIZE'; \
   AUDIO_BITRATE='$AUDIO_BITRATE'; \
+  ENABLE_RECONNECT_BARS='$ENABLE_RECONNECT_BARS'; \
+  RECONNECT_BARS_SECONDS='$RECONNECT_BARS_SECONDS'; \
+  RECONNECT_SLEEP_SECONDS='$RECONNECT_SLEEP_SECONDS'; \
   TEE_OUTPUT='$TEE_OUTPUT'; \
   PID_FILE='$PID_FILE'; LOG_FILE='$LOG_FILE'; \
   _run_fanout_loop" >> "$LOG_FILE" 2>&1 &
