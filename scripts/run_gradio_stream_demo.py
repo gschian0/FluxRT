@@ -59,6 +59,8 @@ voice_choices = [
 udp_writer = None
 udp_writer_lock = threading.Lock()
 udp_writer_dims = (0, 0)
+broadcast_default_width = int(os.getenv("BROADCAST_WIDTH", "288"))
+broadcast_default_height = int(os.getenv("BROADCAST_HEIGHT", "160"))
 
 broadcast_sender_thread = None
 broadcast_sender_lock = threading.Lock()
@@ -222,10 +224,52 @@ def _ensure_broadcast_sender():
 
 
 def _enqueue_broadcast_frame(frame: np.ndarray, fps: float):
+    frame = _normalize_broadcast_frame(frame)
+    if frame is None:
+        return
     _ensure_broadcast_sender()
     frame_copy = frame.copy()
     with broadcast_send_queue_lock:
         broadcast_send_queue.append((frame_copy, float(fps)))
+
+
+def _broadcast_target_dims() -> tuple[int, int]:
+    with udp_writer_lock:
+        if udp_writer_dims[0] > 0 and udp_writer_dims[1] > 0:
+            return int(udp_writer_dims[0]), int(udp_writer_dims[1])
+
+    with last_good_broadcast_frame_lock:
+        if isinstance(last_good_broadcast_frame, np.ndarray) and last_good_broadcast_frame.size > 0:
+            h, w = last_good_broadcast_frame.shape[:2]
+            if w > 0 and h > 0:
+                return int(w), int(h)
+
+    if isinstance(resolution, dict):
+        try:
+            w = int(resolution.get("width", 0))
+            h = int(resolution.get("height", 0))
+            if w > 0 and h > 0:
+                return w, h
+        except Exception:
+            pass
+
+    return broadcast_default_width, broadcast_default_height
+
+
+def _normalize_broadcast_frame(frame: np.ndarray | None) -> np.ndarray | None:
+    if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
+        return None
+
+    target_w, target_h = _broadcast_target_dims()
+    h, w = frame.shape[:2]
+    if w == target_w and h == target_h:
+        return frame
+
+    interpolation = cv2.INTER_AREA if (w > target_w or h > target_h) else cv2.INTER_LINEAR
+    try:
+        return cv2.resize(frame, (target_w, target_h), interpolation=interpolation)
+    except Exception:
+        return frame
 
 
 def _is_processed_frame_valid(frame: np.ndarray | None) -> bool:
@@ -251,8 +295,12 @@ def _is_broadcast_ready() -> bool:
 def _can_start_fanout_now() -> bool:
     if _is_broadcast_ready():
         return True
-    if not is_filter_enabled() or not _workers_alive():
+    if not is_filter_enabled():
         return False
+    if not _workers_alive():
+        with frame_lock:
+            input_frame = current_input_frame
+        return _is_processed_frame_valid(to_bgr(input_frame) if input_frame is not None else None)
     with frame_lock:
         frame = current_processed_frame
     return _is_processed_frame_valid(to_bgr(frame) if frame is not None else None)
@@ -267,6 +315,11 @@ def _push_processed_for_broadcast(processed_frame: np.ndarray | None, fps: float
 
     if not _workers_alive():
         _reset_broadcast_gate("workers not healthy")
+        with frame_lock:
+            fallback_input = current_input_frame
+        fallback_frame = to_bgr(fallback_input) if fallback_input is not None else None
+        if fallback_frame is not None:
+            _enqueue_broadcast_frame(fallback_frame, fps=float(fps))
         return
 
     if not _is_processed_frame_valid(processed_frame):
@@ -505,6 +558,21 @@ def _cleanup_global_orphan_workers() -> None:
         except Exception:
             pass
 
+    # Also reap stale FFmpeg stream-relay processes that can persist across
+    # app restarts and starve webcam processing.
+    try:
+        subprocess.run(
+            [
+                "pkill",
+                "-f",
+                "ffmpeg.*-f mpegts udp://127.0.0.1:5010",
+            ],
+            check=False,
+            capture_output=True,
+        )
+    except Exception:
+        pass
+
     if victims:
         time.sleep(0.3)
         for pid in victims:
@@ -537,7 +605,19 @@ def reset_processor(reason: str):
 def to_bgr(frame):
     if frame is None:
         return None
-    return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    if not isinstance(frame, np.ndarray):
+        return frame
+    if frame.ndim == 2:
+        return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    if frame.ndim != 3:
+        return frame
+
+    channels = frame.shape[2]
+    if channels == 4:
+        return cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+    if channels == 3:
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    return frame
 
 SHOW_NAMES = [
     "Quantum Flux TV",
@@ -1494,6 +1574,8 @@ def _stream_loop(stream_url: str, video_id: int):
             if not cap.isOpened():
                 set_status("stream reconnecting")
                 consecutive_failures += 1
+                keepalive_rgb = _placeholder_rgb("Stream source unavailable")
+                _enqueue_broadcast_frame(to_bgr(keepalive_rgb), fps=8.0)
                 if (
                     consecutive_failures >= 120
                     and not switched_to_fallback
@@ -1519,6 +1601,10 @@ def _stream_loop(stream_url: str, video_id: int):
             if not ok:
                 set_status("stream reconnecting")
                 consecutive_failures += 1
+                # Keep broadcast output alive while upstream reconnects so
+                # fanout does not drop the RTMP session.
+                keepalive_rgb = _placeholder_rgb("Stream reconnecting")
+                _enqueue_broadcast_frame(to_bgr(keepalive_rgb), fps=8.0)
                 if (
                     consecutive_failures >= 120
                     and not switched_to_fallback
@@ -1656,11 +1742,14 @@ def switch_mode(mode: str, request: gr.Request | None):
 def process_webcam(frame):
     if frame is None:
         return None
-
-    _, processed, filter_active = render_frame(to_bgr(frame))
-    candidate = processed if filter_active else None
-    _push_processed_for_broadcast(candidate, fps=25.0)
-    return to_rgb(processed)
+    try:
+        _, processed, filter_active = render_frame(to_bgr(frame))
+        candidate = processed if filter_active else None
+        _push_processed_for_broadcast(candidate, fps=25.0)
+        return to_rgb(processed)
+    except Exception as exc:
+        set_status(f"webcam processing error: {exc}")
+        return frame
 
 
 def main():
@@ -2034,6 +2123,7 @@ def main():
             outputs=[webcam_output],
             stream_every=0.04,
             concurrency_limit=1,
+            queue=False,
         )
 
         video_file.change(start_local_video, inputs=video_file, outputs=None)
@@ -2221,14 +2311,22 @@ def main():
             outputs=None,
         )
 
-    # Ensure a source starts even in headless/no-browser sessions.
+    # Only auto-start an explicit local file source.
+    # Avoid auto-starting remote stream input so webcam mode stays responsive.
     if startup_with_local:
         start_local_video(startup_local_video)
         set_status("local live")
     else:
-        start_stream_video(default_stream_url)
+        set_status("idle")
 
-    demo.queue(default_concurrency_limit=1).launch(
+    # Queue can stall live webcam callbacks over some tunnels; keep it
+    # optional and off by default for responsive webcam processing.
+    enable_queue = os.getenv("GRADIO_ENABLE_QUEUE", "0") == "1"
+    app = demo
+    if enable_queue:
+        app = demo.queue(default_concurrency_limit=8)
+
+    app.launch(
         server_name=args.server_name,
         server_port=args.server_port,
     )
