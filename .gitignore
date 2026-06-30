@@ -231,3 +231,8 @@ scripts/streaming/rtmp_targets.env
 backups/**/*.tgz
 musicgen_output_plus_musicGEN/
 voices/
+
+# Large binaries and model files
+tools/mediamtx/mediamtx
+tools/mediamtx/*.tar.gz
+lora/*.safetensors
