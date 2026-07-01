@@ -1592,17 +1592,45 @@ def to_rgb(frame):
 
 
 def _placeholder_rgb(message: str, width: int = 640, height: int = 360) -> np.ndarray:
+    """Return a glitching SMPTE color-bar placeholder frame."""
+    import time
+    rng = np.random.default_rng(int(time.time() * 1000) % 2**31)
+    # Classic SMPTE color bars (BGR order for OpenCV)
+    bar_colors = np.array([
+        [192, 192, 192],   # white
+        [192, 192, 0],     # yellow
+        [0, 192, 192],     # cyan
+        [0, 192, 0],       # green
+        [192, 0, 192],     # magenta
+        [192, 0, 0],       # red
+        [0, 0, 192],       # blue
+    ], dtype=np.uint8)
+    bar_width = width // len(bar_colors)
     canvas = np.zeros((height, width, 3), dtype=np.uint8)
-    cv2.rectangle(canvas, (0, 0), (width, height), (12, 12, 12), -1)
-    cv2.putText(
-        canvas,
-        "FluxRT Loading",
-        (24, 56),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1.0,
-        (210, 210, 210),
-        2,
-    )
+    for i, color in enumerate(bar_colors):
+        x0 = i * bar_width
+        x1 = width if i == len(bar_colors) - 1 else (i + 1) * bar_width
+        canvas[:, x0:x1] = color
+
+    # Glitch: random horizontal slices shifted and tinted
+    num_glitches = rng.integers(3, 8)
+    for _ in range(num_glitches):
+        y0 = rng.integers(0, max(1, height - 8))
+        y1 = min(height, y0 + rng.integers(4, 24))
+        shift = rng.integers(-40, 41)
+        slice_ = canvas[y0:y1, :].copy()
+        if shift > 0:
+            canvas[y0:y1, shift:] = slice_[:, :-shift]
+            canvas[y0:y1, :shift] = rng.integers(0, 256, (y1 - y0, shift, 3), dtype=np.uint8)
+        elif shift < 0:
+            canvas[y0:y1, :shift] = slice_[:, -shift:]
+            canvas[y0:y1, shift:] = rng.integers(0, 256, (y1 - y0, -shift, 3), dtype=np.uint8)
+        # RGB channel offset tint
+        tint = rng.integers(-30, 31, size=3)
+        canvas[y0:y1] = np.clip(canvas[y0:y1].astype(np.int16) + tint, 0, 255).astype(np.uint8)
+
+    # Scanlines
+    canvas[::4, :] = (canvas[::4, :] * 0.7).astype(np.uint8)
 
     msg = re.sub(r"\s+", " ", (message or "waiting for frames").strip())
     if len(msg) > 64:
@@ -1610,10 +1638,10 @@ def _placeholder_rgb(message: str, width: int = 640, height: int = 360) -> np.nd
     cv2.putText(
         canvas,
         msg,
-        (24, 104),
+        (24, height - 24),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.7,
-        (160, 220, 255),
+        (255, 255, 255),
         2,
     )
     return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
@@ -2177,8 +2205,8 @@ def main():
     startup_local_video = (args.local_video or "").strip()
     startup_with_local = bool(startup_local_video and os.path.isfile(startup_local_video))
 
-    with gr.Blocks(css=APP_CSS) as demo:
-        gr.Markdown("# FluxRT Live Console")
+    with gr.Blocks() as demo:
+        gr.Markdown("# Live Console")
         mode = gr.Radio(
             choices=["webcam", "local", "stream"],
             value="local" if startup_with_local else "stream",
@@ -2792,6 +2820,7 @@ def main():
     app.launch(
         server_name=args.server_name,
         server_port=args.server_port,
+        css=APP_CSS,
     )
 
 
