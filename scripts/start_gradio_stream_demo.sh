@@ -12,6 +12,11 @@ fi
 
 source .venv/bin/activate
 
+PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="$(command -v python3)"
+fi
+
 clear_boot_state() {
   echo "[boot-clear] stopping stale stream demo processes"
   pkill -f 'scripts/run_gradio_stream_demo.py' || true
@@ -49,7 +54,7 @@ APP_PORT="${APP_PORT:-7861}"
 APP_HOST="${APP_HOST:-0.0.0.0}"
 STREAM_CONFIG_PATH="${STREAM_CONFIG_PATH:-configs/stream_demo_config.json}"
 
-nohup python -u scripts/run_gradio_stream_demo.py --int8 --server-port "$APP_PORT" --server-name "$APP_HOST" --config-path "$STREAM_CONFIG_PATH" > /tmp/fluxrt-gradio-stream.log 2>&1 &
+nohup "$PYTHON_BIN" -u scripts/run_gradio_stream_demo.py --int8 --server-port "$APP_PORT" --server-name "$APP_HOST" --config-path "$STREAM_CONFIG_PATH" > /tmp/fluxrt-gradio-stream.log 2>&1 &
 echo "STREAM_DEMO_PID=$!"
 
 for _ in $(seq 1 180); do

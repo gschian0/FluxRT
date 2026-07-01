@@ -1,11 +1,14 @@
 import argparse
+import shutil
 import json
 import random
 import subprocess
 import sys
+import threading
 import time
 import wave
 from pathlib import Path
+from typing import Optional
 
 from magpie_tts_logic import extract_last_word, run_tts
 
@@ -33,6 +36,129 @@ def build_spoken_text(item: dict, include_author: bool) -> str:
     if include_author and philosopher:
         return f"{quote} ... {philosopher}."
     return quote
+
+
+class QuoteCache:
+    """Background-render quote WAVs so the streamer never blocks on TTS."""
+
+    def __init__(
+        self,
+        quotes: list[dict],
+        cache_dir: Path,
+        voice: str,
+        lang: str,
+        rate: int,
+        silence: float,
+        reverb: bool,
+        reverb_mix: float,
+        reverb_decay: float,
+        reverb_delay_ms: int,
+        last_word_echo: bool,
+        echo_target_word: str,
+        echo_mix: float,
+        echo_decay: float,
+        echo_delay_ms: int,
+        include_author: bool,
+        target_size: int = 4,
+    ):
+        self._quotes = quotes
+        self._cache_dir = cache_dir
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._voice = voice
+        self._lang = lang
+        self._rate = rate
+        self._silence = silence
+        self._reverb = reverb
+        self._reverb_mix = reverb_mix
+        self._reverb_decay = reverb_decay
+        self._reverb_delay_ms = reverb_delay_ms
+        self._last_word_echo = last_word_echo
+        self._echo_target_word = echo_target_word
+        self._echo_mix = echo_mix
+        self._echo_decay = echo_decay
+        self._echo_delay_ms = echo_delay_ms
+        self._include_author = include_author
+        self._target_size = target_size
+        self._queue: list[Path] = []
+        self._fallback_paths: list[Path] = []
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._index = 0
+        self._cache_index = 0
+        self._thread = threading.Thread(target=self._worker, daemon=True)
+        self._load_existing_cache()
+        self._thread.start()
+
+    def _load_existing_cache(self) -> None:
+        existing = sorted(self._cache_dir.glob("quote_*.wav"))
+        with self._lock:
+            self._fallback_paths = existing[-max(1, self._target_size * 2):]
+            self._queue.extend(self._fallback_paths[-self._target_size:])
+
+    def _render_one(self, item: dict) -> Optional[Path]:
+        text = build_spoken_text(item, include_author=self._include_author)
+        target_word = self._echo_target_word.strip() or extract_last_word(str(item.get("quote", text)))
+        try:
+            out_path = run_tts(
+                text=text,
+                output_path=None,
+                voice=self._voice,
+                lang=self._lang,
+                rate=self._rate,
+                silence=self._silence,
+                reverb=self._reverb,
+                reverb_mix=self._reverb_mix,
+                reverb_decay=self._reverb_decay,
+                reverb_delay_ms=self._reverb_delay_ms,
+                last_word_echo=self._last_word_echo,
+                echo_target_word=target_word,
+                echo_mix=self._echo_mix,
+                echo_decay=self._echo_decay,
+                echo_delay_ms=self._echo_delay_ms,
+                play=False,
+            )
+            if not out_path:
+                return None
+            source_path = Path(out_path)
+            cache_path = self._cache_dir / f"quote_{int(time.time())}_{self._cache_index:06d}.wav"
+            self._cache_index += 1
+            shutil.copy2(source_path, cache_path)
+            return cache_path
+        except Exception as exc:
+            print(f"[quote-cache] render failed: {type(exc).__name__}: {exc}")
+            return None
+
+    def _worker(self) -> None:
+        while not self._stop_event.is_set():
+            with self._lock:
+                need = max(0, self._target_size - len(self._queue))
+            if need == 0:
+                time.sleep(0.5)
+                continue
+            item = self._quotes[self._index % len(self._quotes)]
+            self._index += 1
+            path = self._render_one(item)
+            if path is not None:
+                with self._lock:
+                    self._queue.append(path)
+                    self._fallback_paths.append(path)
+                    self._fallback_paths = self._fallback_paths[-max(1, self._target_size * 2):]
+
+    def get(self, timeout: float = 30.0) -> Optional[Path]:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._queue:
+                    return self._queue.pop(0)
+            time.sleep(0.1)
+        with self._lock:
+            if self._fallback_paths:
+                return random.choice(self._fallback_paths)
+        return None
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=5)
 
 
 class UdpAudioWriter:
@@ -167,25 +293,25 @@ def main() -> None:
     )
     parser.add_argument("--loop", action="store_true", help="Loop forever through quotes")
     parser.add_argument("--shuffle", action="store_true", help="Shuffle quote order")
-    parser.add_argument("--interval", type=float, default=30.0, help="Seconds between spoken quotes")
+    parser.add_argument("--interval", type=float, default=15.0, help="Seconds between spoken quotes")
     parser.add_argument("--max", type=int, default=0, help="Maximum quotes to speak (0 means all / infinite with --loop)")
     parser.add_argument("--no-author", action="store_true", help="Do not append philosopher name to spoken line")
 
     parser.add_argument("--voice", default="Magpie-Multilingual.EN-US.Aria")
     parser.add_argument("--lang", default="en-US")
     parser.add_argument("--rate", type=int, default=44100)
-    parser.add_argument("--silence", type=float, default=0.75)
+    parser.add_argument("--silence", type=float, default=0.25)
 
     parser.add_argument("--reverb", action="store_true")
-    parser.add_argument("--reverb-mix", type=float, default=0.32)
-    parser.add_argument("--reverb-decay", type=float, default=0.55)
-    parser.add_argument("--reverb-delay-ms", type=int, default=70)
+    parser.add_argument("--reverb-mix", type=float, default=0.18)
+    parser.add_argument("--reverb-decay", type=float, default=0.35)
+    parser.add_argument("--reverb-delay-ms", type=int, default=45)
 
     parser.add_argument("--last-word-echo", action="store_true")
     parser.add_argument("--echo-target-word", default="")
-    parser.add_argument("--echo-mix", type=float, default=0.52)
-    parser.add_argument("--echo-decay", type=float, default=0.78)
-    parser.add_argument("--echo-delay-ms", type=int, default=170)
+    parser.add_argument("--echo-mix", type=float, default=0.28)
+    parser.add_argument("--echo-decay", type=float, default=0.55)
+    parser.add_argument("--echo-delay-ms", type=int, default=120)
 
     parser.add_argument("--play", action="store_true", help="Play WAV after generation")
     parser.add_argument(
@@ -197,6 +323,8 @@ def main() -> None:
     parser.add_argument("--refresh-threshold", type=int, default=3, help="Refresh when remaining quotes <= this")
     parser.add_argument("--refresh-count", type=int, default=30, help="How many quotes to generate on refresh")
     parser.add_argument("--repeat-on-empty", action="store_true", help="Repeat existing quotes when out and no refresh")
+    parser.add_argument("--cache-dir", default="voices/quote_cache", help="Directory to cache pre-rendered quote WAVs")
+    parser.add_argument("--cache-size", type=int, default=4, help="Target number of pre-rendered quotes to keep ready")
     args = parser.parse_args()
 
     quote_path = Path(args.quotes)
@@ -206,81 +334,44 @@ def main() -> None:
     quotes = load_quotes(quote_path)
     print(f"Loaded {len(quotes)} quotes from {quote_path}")
 
-    spoken_count = 0
-    index = 0
-    udp_writer = UdpAudioWriter(args.udp_url.strip(), args.rate) if args.udp_url.strip() else None
-
     if args.shuffle:
         random.shuffle(quotes)
 
+    udp_writer = UdpAudioWriter(args.udp_url.strip(), args.rate) if args.udp_url.strip() else None
+    cache = QuoteCache(
+        quotes=quotes,
+        cache_dir=Path(args.cache_dir),
+        voice=args.voice,
+        lang=args.lang,
+        rate=args.rate,
+        silence=args.silence,
+        reverb=args.reverb,
+        reverb_mix=args.reverb_mix,
+        reverb_decay=args.reverb_decay,
+        reverb_delay_ms=args.reverb_delay_ms,
+        last_word_echo=args.last_word_echo,
+        echo_target_word=args.echo_target_word,
+        echo_mix=args.echo_mix,
+        echo_decay=args.echo_decay,
+        echo_delay_ms=args.echo_delay_ms,
+        include_author=not args.no_author,
+        target_size=max(1, int(args.cache_size)),
+    )
+
+    spoken_count = 0
     try:
         while True:
-            remaining = len(quotes) - index
-            if remaining <= 0:
-                if args.auto_refresh:
-                    try:
-                        print("[quotes] queue exhausted; auto-refreshing...")
-                        quotes = refresh_quotes_with_diffusiongemma(quote_path, args.refresh_count)
-                        index = 0
-                        if args.shuffle:
-                            random.shuffle(quotes)
-                        print(f"[quotes] refresh complete: {len(quotes)} new quotes")
-                        remaining = len(quotes)
-                    except Exception as exc:
-                        print(f"[quotes] refresh failed: {type(exc).__name__}: {exc}")
-                        if args.repeat_on_empty:
-                            print("[quotes] repeating existing quote set")
-                            index = 0
-                            remaining = len(quotes)
-                        else:
-                            return
-                elif args.repeat_on_empty:
-                    print("[quotes] out of quotes; repeating existing quote set")
-                    index = 0
-                    remaining = len(quotes)
-                else:
-                    return
+            if args.max > 0 and spoken_count >= args.max:
+                return
 
-            if remaining <= max(0, int(args.refresh_threshold)):
-                print(f"[quotes] warning: low queue ({remaining} remaining)")
-                if args.auto_refresh:
-                    try:
-                        print("[quotes] pre-emptive refresh starting...")
-                        quotes = refresh_quotes_with_diffusiongemma(quote_path, args.refresh_count)
-                        index = 0
-                        if args.shuffle:
-                            random.shuffle(quotes)
-                        remaining = len(quotes)
-                        print(f"[quotes] pre-emptive refresh complete: {remaining} quotes")
-                    except Exception as exc:
-                        print(f"[quotes] pre-emptive refresh failed: {type(exc).__name__}: {exc}")
+            out_path = cache.get(timeout=30.0)
+            if out_path is None:
+                print("[quotes] cache empty; waiting for renderer...")
+                time.sleep(1)
+                continue
 
-            item = quotes[index]
-            index += 1
-            text = build_spoken_text(item, include_author=not args.no_author)
-            target_word = args.echo_target_word.strip() or extract_last_word(str(item.get("quote", text)))
-
-            out_path = run_tts(
-                text=text,
-                output_path=None,
-                voice=args.voice,
-                lang=args.lang,
-                rate=args.rate,
-                silence=args.silence,
-                reverb=args.reverb,
-                reverb_mix=args.reverb_mix,
-                reverb_decay=args.reverb_decay,
-                reverb_delay_ms=args.reverb_delay_ms,
-                last_word_echo=args.last_word_echo,
-                echo_target_word=target_word,
-                echo_mix=args.echo_mix,
-                echo_decay=args.echo_decay,
-                echo_delay_ms=args.echo_delay_ms,
-                play=args.play,
-            )
             spoken_count += 1
-            print(f"[{spoken_count}] {item.get('quote', '')} — {item.get('philosopher', '')}")
-            print(f"Audio: {out_path}")
+            print(f"[{spoken_count}] streaming cached quote: {out_path}")
 
             if udp_writer is not None:
                 try:
@@ -289,16 +380,16 @@ def main() -> None:
                 except Exception as exc:
                     print(f"UDP stream failed: {type(exc).__name__}: {exc}")
 
-            if args.max > 0 and spoken_count >= args.max:
-                return
-
             if args.interval > 0:
-                # Sleep between quotes. UDP subprocess maintains continuous stream in background.
-                time.sleep(args.interval)
+                if udp_writer is not None:
+                    udp_writer.write_silence(args.interval)
+                else:
+                    time.sleep(args.interval)
 
-            if not args.loop and index >= len(quotes) and not args.repeat_on_empty and not args.auto_refresh:
+            if not args.loop and spoken_count >= len(quotes) and not args.repeat_on_empty and not args.auto_refresh:
                 return
     finally:
+        cache.stop()
         if udp_writer is not None:
             udp_writer.close()
 

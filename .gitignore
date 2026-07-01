@@ -1,6 +1,7 @@
 .vscode/
 local_samples/
 experiments/
+musicgen_output*/
 
 # Weights
 interpolation_model/

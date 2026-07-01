@@ -42,6 +42,9 @@ WAIT_FOR_VIDEO_READY="${WAIT_FOR_VIDEO_READY:-0}"
 ENABLE_RECONNECT_BARS="${ENABLE_RECONNECT_BARS:-1}"
 RECONNECT_BARS_SECONDS="${RECONNECT_BARS_SECONDS:-4}"
 RECONNECT_SLEEP_SECONDS="${RECONNECT_SLEEP_SECONDS:-1}"
+ENABLE_LOCAL_MONITOR="${ENABLE_LOCAL_MONITOR:-0}"
+MONITOR_HLS_DIR="${MONITOR_HLS_DIR:-/tmp/fluxrt-monitor}"
+MONITOR_HLS_PLAYLIST="${MONITOR_HLS_PLAYLIST:-$MONITOR_HLS_DIR/stream.m3u8}"
 
 ensure_udp_buffer_params() {
   local url="$1"
@@ -89,6 +92,11 @@ TARGETS=()
 [[ "$ENABLE_YOUTUBE" == "1" && -n "${YOUTUBE_RTMP_URL:-}" ]] && TARGETS+=("[f=flv:onfail=ignore]${YOUTUBE_RTMP_URL}")
 [[ "$ENABLE_TWITCH" == "1" && -n "${TWITCH_RTMP_URL:-}" ]] && TARGETS+=("[f=flv:onfail=ignore]${TWITCH_RTMP_URL}")
 [[ "$ENABLE_FACEBOOK" == "1" && -n "${FACEBOOK_RTMP_URL:-}" ]] && TARGETS+=("[f=flv:onfail=ignore]${FACEBOOK_RTMP_URL}")
+if [[ "$ENABLE_LOCAL_MONITOR" == "1" ]]; then
+  mkdir -p "$MONITOR_HLS_DIR"
+  rm -f "$MONITOR_HLS_DIR"/stream.m3u8 "$MONITOR_HLS_DIR"/stream_*.ts
+  TARGETS+=("[f=hls:onfail=ignore:hls_time=2:hls_list_size=8:hls_flags=delete_segments+program_date_time+independent_segments:hls_segment_filename=${MONITOR_HLS_DIR}/stream_%05d.ts]${MONITOR_HLS_PLAYLIST}")
+fi
 
 if [[ "${#TARGETS[@]}" -eq 0 ]]; then
   echo "No RTMP targets configured in $ENV_FILE"
@@ -97,7 +105,10 @@ if [[ "${#TARGETS[@]}" -eq 0 ]]; then
 fi
 
 TEE_OUTPUT="$(IFS='|'; echo "${TARGETS[*]}")"
-INPUT_URL="$(ensure_udp_buffer_params "$INPUT_URL")"
+# Video input is a UDP MPEG-TS reader; adding fifo_size/overrun_nonfatal here
+# makes ffmpeg try to bind the port itself, colliding with the Gradio writer.
+# Keep the URL bare so it acts as a pure multicast reader.
+INPUT_URL="${INPUT_URL%%\?*}?pkt_size=1316"
 
 AUDIO_INPUT_URL_BUFFERED="$(ensure_udp_buffer_params "$AUDIO_INPUT_URL")"
 TTS_INPUT_URL_BUFFERED="$(ensure_udp_buffer_params "$TTS_INPUT_URL")"
@@ -316,9 +327,11 @@ _run_fanout_loop() {
   done
 }
 
-nohup bash -c "$(declare -f _run_fanout_loop); \
+nohup bash -c "$(declare -f run_bars_segment); $(declare -f _run_fanout_loop); \
   INPUT_URL='$INPUT_URL'; \
   AUDIO_INPUT_ARGS=(${AUDIO_INPUT_ARGS[*]@Q}); \
+  PREROLL_AUDIO_INPUT_ARGS=(${PREROLL_AUDIO_INPUT_ARGS[*]@Q}); \
+  PREROLL_AUDIO_MAP=(${PREROLL_AUDIO_MAP[*]@Q}); \
   TTS_INPUT_ARGS=(${TTS_INPUT_ARGS[*]@Q}); \
   ENABLE_TTS_OVERLAY='$ENABLE_TTS_OVERLAY'; \
   MUSIC_MIX_VOLUME='$MUSIC_MIX_VOLUME'; \
@@ -343,6 +356,9 @@ if kill -0 "$FANOUT_PID" 2>/dev/null; then
   echo "PID: $FANOUT_PID"
   echo "Input: $INPUT_URL"
   echo "Targets configured: ${#TARGETS[@]}"
+  if [[ "$ENABLE_LOCAL_MONITOR" == "1" ]]; then
+    echo "Local monitor playlist: $MONITOR_HLS_PLAYLIST"
+  fi
   echo "Log: $LOG_FILE"
   exit 0
 fi

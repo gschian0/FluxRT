@@ -31,7 +31,7 @@ AUDIO_BITRATE="${AUDIO_BITRATE:-96k}"
 VIDEO_TRANSCODE_MODE="${VIDEO_TRANSCODE_MODE:-copy}"
 MUSIC_MIX_VOLUME="${MUSIC_MIX_VOLUME:-0.65}"
 TTS_MIX_VOLUME="${TTS_MIX_VOLUME:-1.80}"
-MUSIC_WAIT_TIMEOUT="${MUSIC_WAIT_TIMEOUT:-5}"
+MUSIC_WAIT_TIMEOUT="${MUSIC_WAIT_TIMEOUT:-30}"
 TTS_WAIT_TIMEOUT="${TTS_WAIT_TIMEOUT:-40}"
 VIDEO_SOURCE_MODE="${VIDEO_SOURCE_MODE:-url}"
 VIDEO_WAIT_TIMEOUT="${VIDEO_WAIT_TIMEOUT:-6}"
@@ -182,7 +182,7 @@ if [[ "$AUDIO_SOURCE_MODE" == "url" ]]; then
   if wait_udp_audio_ready "$AUDIO_INPUT_URL" "$MUSIC_WAIT_TIMEOUT"; then
     AUDIO1_INPUT="-thread_queue_size 16384 -i \"${AUDIO_INPUT_URL}\""
   else
-    echo "[fanout] music input unavailable at startup, using silence fallback"
+    echo "[fanout] music input unavailable after ${MUSIC_WAIT_TIMEOUT}s, using silence fallback"
     AUDIO1_INPUT="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
   fi
 else
@@ -193,7 +193,7 @@ if [[ "$ENABLE_TTS_OVERLAY" == "1" && "$TTS_SOURCE_MODE" == "url" ]]; then
   if wait_udp_audio_ready "$TTS_INPUT_URL" "$TTS_WAIT_TIMEOUT"; then
     AUDIO2_INPUT="-thread_queue_size 16384 -i \"${TTS_INPUT_URL}\""
   else
-    echo "[fanout] tts input unavailable at startup, using silence fallback"
+    echo "[fanout] tts input unavailable after ${TTS_WAIT_TIMEOUT}s, using silence fallback"
     AUDIO2_INPUT="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
   fi
   TTS_VOL_EFFECTIVE="$TTS_MIX_VOLUME"

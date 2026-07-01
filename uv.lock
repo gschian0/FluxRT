@@ -165,6 +165,7 @@ dependencies = [
     { name = "numpy" },
     { name = "nvidia-riva-client" },
     { name = "scipy" },
+    { name = "torchaudio" },
     { name = "transformers" },
 ]
 
@@ -174,6 +175,7 @@ requires-dist = [
     { name = "numpy", specifier = "<2.3" },
     { name = "nvidia-riva-client", specifier = ">=2.26.0" },
     { name = "scipy", specifier = ">=1.10,<1.14" },
+    { name = "torchaudio", url = "https://download.pytorch.org/whl/cu128/torchaudio-2.11.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl" },
     { name = "transformers" },
 ]
 
@@ -799,6 +801,14 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/fd/18/a545c4ea42af3df6effd7d13d250ba77a0a86fb20393143bbb9a92e434d4/tokenizers-0.22.2-cp39-abi3-win32.whl", hash = "sha256:a6bf3f88c554a2b653af81f3204491c818ae2ac6fbc09e76ef4773351292bc92", size = 2502363, upload-time = "2026-01-05T10:45:20.593Z" },
     { url = "https://files.pythonhosted.org/packages/65/71/0670843133a43d43070abeb1949abfdef12a86d490bea9cd9e18e37c5ff7/tokenizers-0.22.2-cp39-abi3-win_amd64.whl", hash = "sha256:c9ea31edff2968b44a88f97d784c2f16dc0729b8b143ed004699ebca91f05c48", size = 2747786, upload-time = "2026-01-05T10:45:18.411Z" },
     { url = "https://files.pythonhosted.org/packages/72/f4/0de46cfa12cdcbcd464cc59fde36912af405696f687e53a091fb432f694c/tokenizers-0.22.2-cp39-abi3-win_arm64.whl", hash = "sha256:9ce725d22864a1e965217204946f830c37876eee3b2ba6fc6255e8e903d5fcbc", size = 2612133, upload-time = "2026-01-05T10:45:17.232Z" },
+]
+
+[[package]]
+name = "torchaudio"
+version = "2.11.0+cu128"
+source = { url = "https://download.pytorch.org/whl/cu128/torchaudio-2.11.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl" }
+wheels = [
+    { url = "https://download.pytorch.org/whl/cu128/torchaudio-2.11.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:78b86a17f164bdaabdcee93fdfde2587fc43b9ebf15cd61dcf730b4f8615176b" },
 ]
 
 [[package]]

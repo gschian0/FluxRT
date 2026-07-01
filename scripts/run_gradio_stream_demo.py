@@ -15,10 +15,70 @@ import gradio as gr
 from fluxrt import StreamProcessor
 from fluxrt.utils import crop_maximal_rectangle
 
-default_prompt = "claymation"
+default_prompt = "8k ultra high resolution claymation character video frame, expressive handmade alien hosts, visible fingerprints in clay, miniature broadcast studio, saturated practical lights, crisp macro lens detail, cinematic depth of field"
 default_stream_url = "https://streamer1.connectto.com/AABC_WEB_1201/index.m3u8"
-default_music_radio_url = "http://london-dedicated.myautodj.com:8862/stream"
-default_music_station_name = "AutoDJ London"
+default_music_radio_url = "http://stream.zeno.fm/0a4yq1u0f0hvv"
+default_music_station_name = "Reggae King Radio"
+default_musicgen_output_dir_name = "musicgen_output_bass_chords_pads"
+default_music_prompt = (
+    "cool groove, electronic chill downtempo, bassline and chords lead the track, "
+    "fat reggae dub sub bassline, cool jazz chord progression, lush synth pads, "
+    "airy ethereal melodies throughout, warm chord stabs, light understated drums, "
+    "steady instrumental club lounge mix"
+)
+default_sfx_prompts = """subtle analog tape whoosh, short broadcast transition, clean and quiet
+soft futuristic interface chirps, tiny electric sparkles, short and tasteful
+distant synthetic thunder swell, low cinematic rumble, restrained
+gentle glass shimmer and airy reverse cymbal, short transition sound"""
+default_music_station_m3u = """#EXTM3U
+#EXTINF:-1,Reggae King Radio
+http://stream.zeno.fm/0a4yq1u0f0hvv
+#EXTINF:-1,Roots Legacy Radio
+http://rootslegacy.ddns.net:8000/stream"""
+
+APP_CSS = """
+.gradio-container { max-width: 1680px !important; margin: 0 auto !important; }
+.main { background: #f7f7f4; }
+.block { border-radius: 8px !important; }
+.tabs { border-radius: 8px !important; overflow: visible !important; }
+.tab-nav,
+.gradio-container div[role="tablist"] {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+    align-items: center !important;
+    overflow: visible !important;
+    padding: 8px !important;
+    margin-bottom: 10px !important;
+    background: #ecece6 !important;
+    border: 1px solid #c8c8be !important;
+    border-radius: 8px !important;
+}
+.tab-nav button,
+.gradio-container button[role="tab"] {
+    min-height: 44px !important;
+    padding: 10px 16px !important;
+    font-size: 17px !important;
+    font-weight: 800 !important;
+    line-height: 1.2 !important;
+    color: #111827 !important;
+    background: #ffffff !important;
+    border: 2px solid #a8ada5 !important;
+    border-radius: 8px !important;
+    opacity: 1 !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+}
+.tab-nav button.selected,
+.gradio-container button[role="tab"][aria-selected="true"] {
+    color: #ffffff !important;
+    background: #1f2937 !important;
+    border-color: #1f2937 !important;
+}
+.compact-row { gap: 10px !important; }
+textarea, input { font-size: 15px !important; }
+.status-strip > div { min-width: 0 !important; }
+"""
 
 stream_processor = None
 input_tensor = None
@@ -69,6 +129,10 @@ broadcast_send_queue_lock = threading.Lock()
 
 quote_tts_proc = None
 quote_tts_lock = threading.Lock()
+sfx_proc = None
+sfx_lock = threading.Lock()
+prompt_rotator_proc = None
+prompt_rotator_lock = threading.Lock()
 
 stream_relay_proc = None
 stream_relay_lock = threading.Lock()
@@ -120,6 +184,20 @@ def _is_quote_voice_running() -> bool:
     return _is_process_running("run_quote_tts_from_json.py")
 
 
+def _is_sfx_stream_running() -> bool:
+    with sfx_lock:
+        if sfx_proc is not None and sfx_proc.poll() is None:
+            return True
+    return _is_process_running("run_audiogen_sfx_stream.py")
+
+
+def _prompt_rotator_is_running() -> bool:
+    with prompt_rotator_lock:
+        if prompt_rotator_proc is not None and prompt_rotator_proc.poll() is None:
+            return True
+    return _is_process_running("scripts/streaming/rotate_flux_prompt.py")
+
+
 def _is_audio_mix_bus_running() -> bool:
     pid_file = "/tmp/fluxrt-audio-mix.pid"
     try:
@@ -130,6 +208,22 @@ def _is_audio_mix_bus_running() -> bool:
     except Exception:
         pass
     return _is_process_running("/tmp/fluxrt-audio-mix-loop.sh")
+
+
+def _is_stream_monitor_running() -> bool:
+    pid_file = "/tmp/fluxrt-monitor-http.pid"
+    try:
+        if os.path.isfile(pid_file):
+            raw = open(pid_file, "r", encoding="utf-8", errors="ignore").read().strip()
+            if raw.isdigit() and _pid_is_running(int(raw)):
+                return True
+    except Exception:
+        pass
+    return _is_process_running("http.server 8090")
+
+
+def stream_monitor_url() -> str:
+    return "http://127.0.0.1:8090/"
 
 
 def _status_light_html(label: str, running: bool) -> str:
@@ -148,22 +242,55 @@ def _status_light_html(label: str, running: bool) -> str:
 def poll_audio_service_lights():
     music_running = _is_music_stream_running()
     quote_running = _is_quote_voice_running()
+    sfx_running = _is_sfx_stream_running()
     bus_running = _is_audio_mix_bus_running()
     return (
         _status_light_html("Music", music_running),
         _status_light_html("Quote Voice", quote_running),
+        _status_light_html("SFX", sfx_running),
         _status_light_html("Audio Bus", bus_running),
     )
+
+
+def refresh_stream_monitor_status():
+    state = "running" if _is_stream_monitor_running() else "stopped"
+    playlist = "http://127.0.0.1:8090/stream.m3u8"
+    return f"monitor: {state}\npage: {stream_monitor_url()}\nplaylist: {playlist}"
+
+
+def start_stream_monitor_http_ui():
+    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/streaming/start_stream_monitor_http.sh"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    msg = (result.stdout or result.stderr or "monitor start attempted").strip()
+    if result.returncode != 0:
+        set_status(f"monitor start failed: {msg}")
+        return f"monitor start failed: {msg}"
+    set_status("monitor http started")
+    return msg
+
+
+def stop_stream_monitor_http_ui():
+    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/streaming/stop_stream_monitor_http.sh"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    msg = (result.stdout or result.stderr or "monitor stop attempted").strip()
+    set_status("monitor http stopped")
+    return msg
 
 
 def start_audio_mix_bus_ui(
     music_mix_volume: float,
     tts_mix_volume: float,
     audio_bitrate: str = "128k",
+    enable_sfx_input: bool = False,
+    sfx_mix_volume: float = 0.25,
 ):
     env = os.environ.copy()
     env["MUSIC_MIX_VOLUME"] = str(float(music_mix_volume))
     env["TTS_MIX_VOLUME"] = str(float(tts_mix_volume))
+    env["SFX_MIX_VOLUME"] = str(float(sfx_mix_volume))
+    env["ENABLE_SFX_INPUT"] = "1" if enable_sfx_input else "0"
+    if enable_sfx_input:
+        env["FORCE_RESTART"] = "1"
     env["AUDIO_BITRATE"] = (audio_bitrate or "128k").strip()
     cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/streaming/start_audio_mix_bus.sh"]
     result = subprocess.run(cmd, env=env, capture_output=True, text=True)
@@ -198,17 +325,29 @@ def _reset_broadcast_gate(reason: str | None = None):
 
 
 def _broadcast_sender_loop():
+    last_frame = None
+    last_fps = 8
+    next_send_ts = 0.0
     while True:
         payload = None
         with broadcast_send_queue_lock:
             if broadcast_send_queue:
                 payload = broadcast_send_queue.popleft()
+
+        now = time.monotonic()
         if payload is None:
+            if last_frame is not None and now >= next_send_ts:
+                _write_to_udp(last_frame, fps=int(max(1, last_fps)))
+                next_send_ts = now + (1.0 / float(max(1, last_fps)))
+                continue
             time.sleep(0.002)
             continue
 
         frame_to_send, fps = payload
-        _write_to_udp(frame_to_send, fps=int(max(1, fps)))
+        last_frame = frame_to_send
+        last_fps = int(max(1, fps))
+        _write_to_udp(frame_to_send, fps=last_fps)
+        next_send_ts = now + (1.0 / float(max(1, last_fps)))
 
 
 def _ensure_broadcast_sender():
@@ -380,6 +519,8 @@ def _push_processed_for_broadcast(processed_frame: np.ndarray | None, fps: float
 
 def _get_udp_writer(width, height, fps=25):
     global udp_writer, udp_writer_dims
+    # Keep keyframes frequent so downstream decoders recover quickly from UDP loss.
+    gop = max(8, int(float(fps) * 2))
     with udp_writer_lock:
         if udp_writer is not None and udp_writer_dims != (width, height):
             try:
@@ -409,10 +550,10 @@ def _get_udp_writer(width, height, fps=25):
                 '-c:v', 'libx264',
                 '-preset', 'ultrafast',
                 '-tune', 'zerolatency',
-                '-g', '50',
-                '-keyint_min', '50',
+                '-g', str(gop),
+                '-keyint_min', str(gop),
                 '-sc_threshold', '0',
-                '-x264-params', 'repeat-headers=1:keyint=50:min-keyint=50:scenecut=0',
+                '-x264-params', f'repeat-headers=1:keyint={gop}:min-keyint={gop}:scenecut=0',
                 '-pix_fmt', 'yuv420p',
                 '-mpegts_flags', '+resend_headers',
                 '-muxdelay', '0',
@@ -633,6 +774,21 @@ SHOW_NAMES = [
 _current_show_str = SHOW_NAMES[0]
 _show_last_changed = time.time()
 
+
+def _fit_text_to_width(text: str, max_width: int, font_scale: float, thickness: int) -> str:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    if cv2.getTextSize(text, font, font_scale, thickness)[0][0] <= max_width:
+        return text
+
+    trimmed = text
+    while len(trimmed) > 4:
+        candidate = trimmed[:-1].rstrip() + "..."
+        if cv2.getTextSize(candidate, font, font_scale, thickness)[0][0] <= max_width:
+            return candidate
+        trimmed = trimmed[:-1]
+    return "..."
+
+
 def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
     global _current_show_str, _show_last_changed
     now = time.time()
@@ -643,28 +799,76 @@ def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
         
     out = frame_bgr.copy()
     h, w = out.shape[:2]
+    scale = max(0.42, min(1.0, min(w / 640.0, h / 360.0)))
+    margin = max(6, int(16 * scale))
+    bar_h = max(32, int(60 * scale))
+    bar_y1 = max(6, h - margin - bar_h)
+    bar_y2 = h - margin
+    label_w = max(42, int(84 * scale))
+    label_h = max(20, int(38 * scale))
+    label_x1 = margin + max(4, int(10 * scale))
+    label_y1 = bar_y1 + max(5, int(12 * scale))
+    label_y2 = min(bar_y2 - 4, label_y1 + label_h)
+    live_font = max(0.35, 0.75 * scale)
+    show_font = max(0.34, 0.88 * scale)
+    clock_font = max(0.34, 0.72 * scale)
+    text_thickness = max(1, int(round(2 * scale)))
 
-    # Lower-left title package.
     overlay = out.copy()
-    cv2.rectangle(overlay, (16, h - 78), (w - 16, h - 18), (0, 0, 0), -1)
-    cv2.rectangle(overlay, (26, h - 66), (110, h - 28), (0, 0, 220), -1)
+    cv2.rectangle(overlay, (margin, bar_y1), (w - margin, bar_y2), (0, 0, 0), -1)
+    cv2.rectangle(overlay, (label_x1, label_y1), (label_x1 + label_w, label_y2), (0, 0, 220), -1)
     cv2.addWeighted(overlay, 0.6, out, 0.4, 0, out)
 
-    cv2.putText(out, "LIVE", (36, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
-    cv2.putText(out, _current_show_str, (126, h - 38), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+    live_x = label_x1 + max(5, int(10 * scale))
+    live_y = label_y2 - max(5, int(10 * scale))
+    show_x = label_x1 + label_w + max(8, int(16 * scale))
+    show_y = live_y
+    show_text = _fit_text_to_width(
+        _current_show_str,
+        max(24, w - margin - show_x - 4),
+        show_font,
+        text_thickness,
+    )
+    cv2.putText(out, "LIVE", (live_x, live_y), cv2.FONT_HERSHEY_SIMPLEX, live_font, (255, 255, 255), text_thickness)
+    cv2.putText(out, show_text, (show_x, show_y), cv2.FONT_HERSHEY_SIMPLEX, show_font, (255, 255, 255), text_thickness)
 
-    # Upper-right numeric clock.
     current_time_str = time.strftime("%H:%M:%S")
-    tw, th = cv2.getTextSize(current_time_str, cv2.FONT_HERSHEY_SIMPLEX, 0.72, 2)[0]
-    x2 = w - 18
-    x1 = max(12, x2 - tw - 24)
-    y1 = 16
-    y2 = y1 + th + 18
+    tw, th = cv2.getTextSize(current_time_str, cv2.FONT_HERSHEY_SIMPLEX, clock_font, text_thickness)[0]
+    x2 = w - margin
+    x1 = max(margin, x2 - tw - max(12, int(24 * scale)))
+    y1 = margin
+    y2 = y1 + th + max(10, int(18 * scale))
     cv2.rectangle(out, (x1, y1), (x2, y2), (0, 0, 0), -1)
     cv2.rectangle(out, (x1, y1), (x2, y2), (70, 70, 70), 1)
-    cv2.putText(out, current_time_str, (x1 + 12, y2 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (235, 235, 235), 2)
+    cv2.putText(out, current_time_str, (x1 + max(6, int(12 * scale)), y2 - max(5, int(8 * scale))), cv2.FONT_HERSHEY_SIMPLEX, clock_font, (235, 235, 235), text_thickness)
     
     return out
+
+
+def polish_processed_frame(frame_bgr: np.ndarray) -> np.ndarray:
+    if frame_bgr is None:
+        return frame_bgr
+    try:
+        frame = np.asarray(frame_bgr)
+        if frame.dtype != np.uint8:
+            frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=1.35, tileGridSize=(4, 4))
+        l_channel = clahe.apply(l_channel)
+        contrast = cv2.cvtColor(cv2.merge((l_channel, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
+
+        blur = cv2.GaussianBlur(contrast, (0, 0), 0.8)
+        sharpened = cv2.addWeighted(contrast, 1.22, blur, -0.22, 0)
+        hsv = cv2.cvtColor(sharpened, cv2.COLOR_BGR2HSV)
+        h_channel, s_channel, v_channel = cv2.split(hsv)
+        s_channel = np.clip(s_channel.astype(np.float32) * 1.06, 0, 255).astype(np.uint8)
+        v_channel = np.clip(v_channel.astype(np.float32) * 1.02, 0, 255).astype(np.uint8)
+        return cv2.cvtColor(cv2.merge((h_channel, s_channel, v_channel)), cv2.COLOR_HSV2BGR)
+    except Exception as exc:
+        print(f"Visual polish error: {exc}")
+        return frame_bgr
 
 
 def apply_overlay(frame_bgr: np.ndarray) -> np.ndarray:
@@ -891,19 +1095,25 @@ def start_musicgen_stream(
 
     env = os.environ.copy()
     env["RADIO_URL"] = radio_url.strip()
-    env["MUSICGEN_BASE_PROMPT"] = (base_prompt or "experimental electronic sound art").strip()
+    env["MUSICGEN_BASE_PROMPT"] = (base_prompt or default_music_prompt).strip()
     env["MUSICGEN_SAMPLE_SECONDS"] = str(int(sample_seconds))
     env["MUSICGEN_GEN_SECONDS"] = str(int(gen_seconds))
     env["MUSICGEN_TOP_K"] = str(int(top_k))
     env["MUSICGEN_TOP_P"] = str(float(top_p))
     env["MUSICGEN_TEMPERATURE"] = str(float(temperature))
     env["MUSICGEN_GUIDANCE_SCALE"] = str(float(guidance_scale))
-    env["MUSICGEN_PARALLEL_CLIPS"] = "2"
-    env["MUSICGEN_SEED"] = "-1"
+    env["MUSICGEN_DRUNK_WALK"] = "0"
+    env["MUSICGEN_DRUNK_WALK_STRENGTH"] = "0.0"
+    env["MUSICGEN_MODEL"] = "facebook/musicgen-small"
+    env["MUSICGEN_OUTPUT_DIR"] = os.path.join(_repo_root(), default_musicgen_output_dir_name)
+    env["MUSICGEN_CONDITIONING_MODE"] = "text"
+    env["MUSICGEN_CONDITIONING_SECONDS"] = "8"
+    env["MUSICGEN_PARALLEL_CLIPS"] = "3"
+    env["MUSICGEN_SEED"] = "424242"
     env["MUSICGEN_STREAM_DELAY_SECONDS"] = str(float(stream_delay_seconds))
     env["MUSICGEN_CROSSFADE_SECONDS"] = str(float(crossfade_seconds))
     env["MUSICGEN_PAUSE_SECONDS"] = "0"
-    env["MUSICGEN_BOOTSTRAP_CLIPS"] = "24"
+    env["MUSICGEN_BOOTSTRAP_CLIPS"] = "64"
     env["MUSICGEN_AUDIO_UDP_URL"] = "udp://127.0.0.1:5002?pkt_size=1316"
 
     cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/start_musicgen_radio_plus_musicGEN.sh"]
@@ -939,6 +1149,40 @@ def stop_musicgen_stream():
     return msg
 
 
+def start_audiogen_sfx_stream(
+    sfx_prompts: str,
+    sfx_duration: float,
+    sfx_interval: float,
+    sfx_volume: float,
+    sfx_seed: int,
+    sfx_cpu_mode: bool,
+):
+    env = os.environ.copy()
+    env["AUDIOGEN_SFX_PROMPTS"] = (sfx_prompts or default_sfx_prompts).strip()
+    env["AUDIOGEN_SFX_DURATION"] = str(float(sfx_duration))
+    env["AUDIOGEN_SFX_INTERVAL"] = str(float(sfx_interval))
+    env["AUDIOGEN_SFX_VOLUME"] = str(float(sfx_volume))
+    env["AUDIOGEN_SFX_SEED"] = str(int(sfx_seed))
+    env["AUDIOGEN_SFX_CPU"] = "1" if sfx_cpu_mode else "0"
+    env["AUDIOGEN_SFX_AUDIO_UDP_URL"] = "udp://127.0.0.1:5008?pkt_size=1316"
+    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/start_audiogen_sfx_stream.sh"]
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    msg = (result.stdout or result.stderr or "audiogen sfx start attempted").strip()
+    if result.returncode != 0:
+        set_status(f"audiogen sfx start failed: {msg}")
+        return f"audiogen sfx start failed: {msg}"
+    set_status("audiogen sfx stream started (udp 5008)")
+    return msg
+
+
+def stop_audiogen_sfx_stream():
+    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/stop_audiogen_sfx_stream.sh"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    msg = (result.stdout or result.stderr or "audiogen sfx stopped").strip()
+    set_status("audiogen sfx stopped")
+    return msg
+
+
 def refresh_audio_mix_bus_status():
     return "audio bus: running (udp://127.0.0.1:5006)" if _is_audio_mix_bus_running() else "audio bus: stopped"
 
@@ -951,7 +1195,10 @@ def start_fanout_with_music(
     use_audio_bus: bool,
     music_mix_volume: float,
     tts_mix_volume: float,
+    enable_sfx_input: bool,
+    sfx_mix_volume: float,
     fanout_audio_bitrate: str,
+    enable_local_monitor: bool,
 ):
     if not (enable_youtube or enable_twitch or enable_facebook):
         set_status("fanout start skipped: no platform enabled")
@@ -1007,12 +1254,20 @@ def start_fanout_with_music(
     enable_twitch_str = "1" if enable_twitch else "0"
     enable_facebook_str = "1" if enable_facebook else "0"
     selected_audio_bitrate = (fanout_audio_bitrate or "96k").strip()
+    enable_monitor_str = "1" if enable_local_monitor else "0"
+
+    if enable_local_monitor:
+        monitor_msg = start_stream_monitor_http_ui()
+        if "failed" in monitor_msg.lower():
+            return f"fanout start blocked: local monitor requested but failed to start ({monitor_msg})"
 
     if use_audio_bus:
         bus_msg = start_audio_mix_bus_ui(
             music_mix_volume=music_mix_volume,
             tts_mix_volume=tts_mix_volume,
             audio_bitrate=selected_audio_bitrate,
+            enable_sfx_input=enable_sfx_input,
+            sfx_mix_volume=sfx_mix_volume,
         )
         if "failed" in bus_msg.lower():
             return f"fanout start blocked: audio bus requested but failed to start ({bus_msg})"
@@ -1024,7 +1279,7 @@ def start_fanout_with_music(
         "cd /home/gschi/FluxRT && "
         "scripts/streaming/stop_mediamtx_fanout.sh || true; "
         "scripts/streaming/stop_rtmp_fanout.sh || true; "
-        f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} ENABLE_TTS_OVERLAY={enable_quote_voice_str} AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url "
+        f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} ENABLE_LOCAL_MONITOR={enable_monitor_str} ENABLE_TTS_OVERLAY={enable_quote_voice_str} AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url "
         "INPUT_URL='udp://127.0.0.1:5000?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1' "
         f"AUDIO_INPUT_URL='{audio_input_url}' "
         "TTS_INPUT_URL='udp://127.0.0.1:5004?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1' "
@@ -1047,7 +1302,11 @@ def start_fanout_with_music(
 
     launch_msg = (result.stdout or "fanout launch started").strip()
     set_status("fanout started (direct RTMP loop)")
+    if enable_local_monitor:
+        launch_msg += f"\nLocal monitor: {stream_monitor_url()}"
     if use_audio_bus:
+        if enable_sfx_input:
+            return launch_msg + " (direct fanout + audio bus on udp 5006 + sfx udp 5008)"
         return launch_msg + " (direct fanout + audio bus on udp 5006)"
     return launch_msg + (" (quote voice mix enabled)" if enable_quote_voice else "")
 
@@ -1060,7 +1319,10 @@ def start_fanout_with_music_ui(
     use_audio_bus: bool,
     music_mix_volume: float,
     tts_mix_volume: float,
+    enable_sfx_input: bool,
+    sfx_mix_volume: float,
     fanout_audio_bitrate: str,
+    enable_local_monitor: bool,
 ):
     msg = start_fanout_with_music(
         enable_youtube,
@@ -1070,7 +1332,10 @@ def start_fanout_with_music_ui(
         use_audio_bus,
         music_mix_volume,
         tts_mix_volume,
+        enable_sfx_input,
+        sfx_mix_volume,
         fanout_audio_bitrate,
+        enable_local_monitor,
     )
     stamp = time.strftime("%H:%M:%S")
     ui_msg = f"[{stamp}] {msg}"
@@ -1117,7 +1382,9 @@ def stop_all_stream_workers():
     # Main stream stop should stop audio workers too, so background generation does not linger.
     stop_video_source()
     stop_musicgen_stream()
+    stop_audiogen_sfx_stream()
     stop_quote_voice_stream()
+    stop_auto_prompt_rotator()
 
 
 def generate_quote_data_inline(count: int, output_path: str):
@@ -1128,7 +1395,7 @@ def generate_quote_data_inline(count: int, output_path: str):
         "-lc",
         (
             "cd /home/gschi/FluxRT && "
-            f"uv run scripts/generate_quote_data_diffusiongemma.py --count {count} --output '{output_path}'"
+            f"uv run python scripts/generate_quote_data_diffusiongemma.py --count {count} --output '{output_path}'"
         ),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -1161,10 +1428,11 @@ def start_quote_voice_stream(
 
     cmd_parts = [
         "cd /home/gschi/FluxRT &&",
-        "uv run scripts/run_quote_tts_from_json.py",
+        "uv run python -u scripts/run_quote_tts_from_json.py",
         f"--quotes '{quote_json_path}'",
         f"--voice '{voice_name}'",
         f"--interval {max(0.0, float(interval_seconds))}",
+        "--silence 0.25",
         "--udp-url 'udp://127.0.0.1:5004?pkt_size=1316'",
     ]
     if not include_author:
@@ -1180,9 +1448,18 @@ def start_quote_voice_stream(
     cmd_parts.append("--refresh-threshold 10")
     cmd_parts.append("--refresh-count 50")
     cmd_parts.append("--repeat-on-empty")
-    # Keep quote voice FX consistently on to avoid dry/cut-in sounding speech.
-    cmd_parts.append("--reverb")
-    cmd_parts.append("--last-word-echo")
+    cmd_parts.append("--cache-dir voices/quote_cache")
+    cmd_parts.append("--cache-size 4")
+    if reverb_enabled:
+        cmd_parts.append("--reverb")
+        cmd_parts.append("--reverb-mix 0.18")
+        cmd_parts.append("--reverb-decay 0.35")
+        cmd_parts.append("--reverb-delay-ms 45")
+    if echo_enabled:
+        cmd_parts.append("--last-word-echo")
+        cmd_parts.append("--echo-mix 0.28")
+        cmd_parts.append("--echo-decay 0.55")
+        cmd_parts.append("--echo-delay-ms 120")
 
     full_cmd = " ".join(cmd_parts)
     try:
@@ -1197,32 +1474,47 @@ def start_quote_voice_stream(
     return "quote voice started (udp mix on 5004)"
 
 
-def _latest_musicgen_clip() -> str | None:
-    output_dir = os.path.join(_repo_root(), "musicgen_output_plus_musicGEN")
-    if not os.path.isdir(output_dir):
-        return None
+def _musicgen_output_dirs() -> list[str]:
+    repo = _repo_root()
+    preferred = os.path.join(repo, default_musicgen_output_dir_name)
+    dirs = []
+    if os.path.isdir(preferred):
+        dirs.append(preferred)
+    try:
+        for name in os.listdir(repo):
+            path = os.path.join(repo, name)
+            if name.startswith("musicgen_output_") and os.path.isdir(path) and path not in dirs:
+                dirs.append(path)
+    except Exception:
+        pass
+    return sorted(dirs, key=lambda p: os.path.getmtime(p), reverse=True)
 
-    candidates = [
-        os.path.join(output_dir, name)
-        for name in os.listdir(output_dir)
-        if name.endswith(".wav") and name.startswith("musicgen_clip_")
-    ]
+
+def _latest_musicgen_clip() -> str | None:
+    candidates = []
+    for output_dir in _musicgen_output_dirs():
+        candidates.extend(
+            os.path.join(output_dir, name)
+            for name in os.listdir(output_dir)
+            if name.endswith(".wav") and name.startswith("musicgen_clip_")
+        )
     if not candidates:
         return None
     return max(candidates, key=os.path.getmtime)
 
 
 def _read_marker(marker_name: str) -> str | None:
-    marker_path = os.path.join(_repo_root(), "musicgen_output_plus_musicGEN", marker_name)
-    if not os.path.isfile(marker_path):
-        return None
-    try:
-        path = open(marker_path, "r", encoding="utf-8").read().strip()
-    except Exception:
-        return None
-    if not path:
-        return None
-    return path if os.path.isfile(path) else None
+    for output_dir in _musicgen_output_dirs():
+        marker_path = os.path.join(output_dir, marker_name)
+        if not os.path.isfile(marker_path):
+            continue
+        try:
+            path = open(marker_path, "r", encoding="utf-8").read().strip()
+        except Exception:
+            continue
+        if path and os.path.isfile(path):
+            return path
+    return None
 
 
 def _clip_index_from_path(path: str | None) -> int | None:
@@ -1239,9 +1531,8 @@ def poll_musicgen_preview():
     now_clip = _read_marker("now_playing_path.txt")
     latest_clip = _latest_musicgen_clip()
 
-    output_dir = os.path.join(_repo_root(), "musicgen_output_plus_musicGEN")
     all_clips = []
-    if os.path.isdir(output_dir):
+    for output_dir in _musicgen_output_dirs():
         for name in os.listdir(output_dir):
             if name.startswith("musicgen_clip_") and name.endswith(".wav"):
                 all_clips.append(os.path.join(output_dir, name))
@@ -1281,15 +1572,18 @@ def render_frame(frame_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray, bool]:
     if frame_bgr is None:
         return frame_bgr, frame_bgr, False
 
-    frame_with_overlay = apply_overlay(frame_bgr) if is_overlay_enabled() else frame_bgr
+    overlay_active = is_overlay_enabled()
+    display_input = apply_overlay(frame_bgr) if overlay_active else frame_bgr
     if is_filter_enabled():
         try:
-            _, processed = process_frame(frame_with_overlay)
-            return frame_with_overlay, processed, True
+            _, processed = process_frame(frame_bgr)
+            processed = polish_processed_frame(processed)
+            display_processed = apply_overlay(processed) if overlay_active else processed
+            return display_input, display_processed, True
         except Exception as exc:
             set_status(f"filter degraded: {exc}")
-            return frame_with_overlay, frame_with_overlay, False
-    return frame_with_overlay, frame_with_overlay, False
+            return display_input, display_input, False
+    return display_input, display_input, False
 
 def to_rgb(frame):
     if frame is None:
@@ -1356,6 +1650,88 @@ def process_frame(frame):
 def set_prompt(prompt: str):
     sp, _, _, _ = get_processor()
     sp.set_prompt(prompt)
+
+
+def apply_custom_image_prompt(prompt: str):
+    prompt = (prompt or "").strip()
+    if not prompt:
+        msg = "image prompt: enter a custom prompt"
+        set_status(msg)
+        return msg
+
+    stop_auto_prompt_rotator()
+    set_prompt(prompt)
+    msg = "image prompt: custom prompt applied"
+    set_status(msg)
+    return msg
+
+
+def set_image_prompt_mode(mode: str):
+    if mode == "Auto Prompt":
+        msg = start_auto_prompt_rotator()
+        return msg, gr.update(interactive=False), gr.update(interactive=False)
+
+    stop_auto_prompt_rotator()
+    msg = "image prompt: custom prompt mode"
+    set_status(msg)
+    return msg, gr.update(interactive=True), gr.update(interactive=True)
+
+
+def set_auto_image_prompt_enabled(enabled: bool):
+    if enabled:
+        msg = start_auto_prompt_rotator()
+        return msg, gr.update(interactive=False), gr.update(interactive=False)
+
+    stop_auto_prompt_rotator()
+    msg = "image prompt: manual text prompt mode"
+    set_status(msg)
+    return msg, gr.update(interactive=True), gr.update(interactive=True)
+
+
+def start_auto_prompt_rotator():
+    global prompt_rotator_proc
+    if _prompt_rotator_is_running():
+        set_status("auto prompt: already on")
+        return "auto prompt: already on"
+
+    log_path = "/tmp/fluxrt-prompt-rotator.log"
+    cmd = [
+        "bash",
+        "-lc",
+        "cd /home/gschi/FluxRT && uv run python -u scripts/streaming/rotate_flux_prompt.py --interval 75 --jitter 15",
+    ]
+    try:
+        log_file = open(log_path, "a", encoding="utf-8")
+        with prompt_rotator_lock:
+            prompt_rotator_proc = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+    except Exception as exc:
+        msg = str(exc)
+        set_status(f"auto prompt failed: {msg}")
+        return f"auto prompt failed: {msg}"
+
+    set_status("auto prompt: on")
+    return "auto prompt: on"
+
+
+def stop_auto_prompt_rotator():
+    global prompt_rotator_proc
+    with prompt_rotator_lock:
+        proc = prompt_rotator_proc
+        prompt_rotator_proc = None
+    if proc is not None and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            proc.kill()
+
+    subprocess.run(
+        ["bash", "-lc", "pkill -f 'scripts/streaming/rotate_flux_prompt.py' || true"],
+        capture_output=True,
+        text=True,
+    )
+    set_status("auto prompt: off")
+    return "auto prompt: off"
 
 
 def set_reference_image_ui(image):
@@ -1801,7 +2177,8 @@ def main():
     startup_local_video = (args.local_video or "").strip()
     startup_with_local = bool(startup_local_video and os.path.isfile(startup_local_video))
 
-    with gr.Blocks() as demo:
+    with gr.Blocks(css=APP_CSS) as demo:
+        gr.Markdown("# FluxRT Live Console")
         mode = gr.Radio(
             choices=["webcam", "local", "stream"],
             value="local" if startup_with_local else "stream",
@@ -1818,288 +2195,339 @@ def main():
 
         source_timer = gr.Timer(value=0.04, active=True)
 
-        with gr.Row():
-            with gr.Column(visible=False) as webcam_input_col:
-                webcam_input = gr.Image(
-                    sources=["webcam"],
-                    streaming=True,
-                    type="numpy",
-                    label="Webcam",
-                )
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=3, min_width=420):
+                with gr.Tabs():
+                    with gr.Tab("Source"):
+                        with gr.Column(visible=False) as webcam_input_col:
+                            webcam_input = gr.Image(
+                                sources=["webcam"],
+                                streaming=True,
+                                type="numpy",
+                                label="Webcam",
+                            )
 
-            with gr.Column(visible=True) as source_input_col:
-                with gr.Column(visible=startup_with_local) as local_controls:
-                    video_file = gr.File(
-                        label="Choose local video",
-                        file_count="single",
-                        file_types=["video"],
-                        type="filepath",
-                    )
+                        with gr.Column(visible=True) as source_input_col:
+                            with gr.Column(visible=startup_with_local) as local_controls:
+                                video_file = gr.File(
+                                    label="Choose local video",
+                                    file_count="single",
+                                    file_types=["video"],
+                                    type="filepath",
+                                )
 
-                with gr.Column(visible=(not startup_with_local)) as stream_controls:
-                    with gr.Row():
-                        catalog_choice = gr.Dropdown(
-                            label="Catalog Group",
-                            choices=catalog_choices,
-                            value=default_catalog,
-                            allow_custom_value=False,
-                            filterable=True,
+                            with gr.Column(visible=(not startup_with_local)) as stream_controls:
+                                with gr.Row():
+                                    catalog_choice = gr.Dropdown(
+                                        label="Catalog Group",
+                                        choices=catalog_choices,
+                                        value=default_catalog,
+                                        allow_custom_value=False,
+                                        filterable=True,
+                                        interactive=True,
+                                    )
+                                    load_catalog_btn = gr.Button("Reload Catalog")
+                                channel_choice = gr.Dropdown(
+                                    label="Channel Choice",
+                                    choices=[],
+                                    allow_custom_value=True,
+                                    filterable=True,
+                                    interactive=True,
+                                )
+                                stream_url = gr.Textbox(
+                                    label="Stream URL",
+                                    value=default_stream_url,
+                                    lines=1,
+                                )
+                                with gr.Row():
+                                    apply_channel_btn = gr.Button("Use Selected")
+                                    stream_start_btn = gr.Button("Start Stream", variant="primary")
+                                    stream_stop_btn = gr.Button("Stop")
+
+                                with gr.Accordion("Custom M3U", open=False):
+                                    m3u_catalog = gr.Textbox(
+                                        label="M3U Catalog",
+                                        lines=10,
+                                        value="",
+                                        placeholder="#EXTM3U\n#EXTINF:-1,Channel Name\nhttps://example.com/live.m3u8",
+                                    )
+
+                    with gr.Tab("Visual"):
+                        prompt = gr.Textbox(
+                            value=default_prompt,
+                            label="Manual Text Prompt",
+                            lines=5,
                             interactive=True,
                         )
-                        load_catalog_btn = gr.Button("Reload Catalog")
-                    with gr.Row():
-                        channel_choice = gr.Dropdown(
-                            label="Channel Choice",
-                            choices=[],
-                            allow_custom_value=True,
-                            filterable=True,
-                            interactive=True,
+                        with gr.Row():
+                            prompt_apply_btn = gr.Button("Enter Prompt", variant="primary")
+                            auto_prompt_toggle = gr.Checkbox(value=False, label="Auto Prompt")
+                            filter_toggle = gr.Checkbox(value=True, label="AI Filter")
+                        with gr.Row():
+                            overlay_on_btn = gr.Button("Overlay On")
+                            overlay_off_btn = gr.Button("Overlay Off")
+                        image_prompt_status = gr.Textbox(
+                            label="Image Prompt Status",
+                            value="image prompt: manual text prompt mode",
+                            interactive=False,
                         )
-                    stream_url = gr.Textbox(
-                        label="Stream URL (custom field)",
-                        value=default_stream_url,
-                        lines=1,
-                    )
-                    with gr.Row():
-                        apply_channel_btn = gr.Button("Use Selected Channel")
-                        stream_start_btn = gr.Button("Start Stream")
-                        stream_stop_btn = gr.Button("Stop")
+                        ref_image_input = gr.Image(
+                            label="Reference Image",
+                            type="numpy",
+                            sources=["upload"],
+                            image_mode="RGB",
+                        )
+                        ref_image_apply_btn = gr.Button("Apply Image Prompt")
 
-                    with gr.Accordion("Paste Custom M3U (optional)", open=False):
-                        m3u_catalog = gr.Textbox(
-                            label="Custom M3U Catalog",
-                            lines=10,
-                            value="",
-                            placeholder="#EXTM3U\n#EXTINF:-1,Channel Name\nhttps://example.com/live.m3u8",
+            with gr.Column(scale=4, min_width=520):
+                with gr.Tabs():
+                    with gr.Tab("Music"):
+                        with gr.Row():
+                            music_station_choice = gr.Dropdown(
+                                label="Music Station",
+                                choices=initial_music_station_choices,
+                                value=default_music_choice,
+                                allow_custom_value=False,
+                                filterable=True,
+                                interactive=True,
+                                scale=3,
+                            )
+                            load_music_catalog_btn = gr.Button("Load Stations")
+                            use_music_station_btn = gr.Button("Use Station")
+                        musicgen_radio_url = gr.Textbox(
+                            label="Radio URL",
+                            value=music_station_map.get(default_music_choice, default_music_radio_url),
+                            lines=1,
+                        )
+                        musicgen_base_prompt = gr.Textbox(
+                            label="Music Prompt",
+                            value=default_music_prompt,
+                            lines=2,
+                        )
+                        with gr.Accordion("Music Station M3U", open=False):
+                            music_station_m3u = gr.Textbox(
+                                label="M3U Catalog",
+                                lines=7,
+                                value=default_music_station_m3u,
+                                placeholder="#EXTM3U\n#EXTINF:-1,Station Name\nhttps://example.com/radio",
+                            )
+                        with gr.Row():
+                            musicgen_sample_seconds = gr.Slider(
+                                label="Sample Seconds",
+                                minimum=6,
+                                maximum=30,
+                                value=8,
+                                step=1,
+                            )
+                            musicgen_gen_seconds = gr.Slider(
+                                label="Gen Seconds",
+                                minimum=6,
+                                maximum=30,
+                                value=8,
+                                step=1,
+                            )
+                            musicgen_top_k = gr.Slider(
+                                label="Top-k",
+                                minimum=0,
+                                maximum=1000,
+                                value=110,
+                                step=1,
+                            )
+                        with gr.Row():
+                            musicgen_top_p = gr.Slider(
+                                label="Top-p",
+                                minimum=0.05,
+                                maximum=1.0,
+                                value=0.82,
+                                step=0.01,
+                            )
+                            musicgen_temperature = gr.Slider(
+                                label="Temperature",
+                                minimum=0.1,
+                                maximum=2.0,
+                                value=0.78,
+                                step=0.05,
+                            )
+                            musicgen_guidance_scale = gr.Slider(
+                                label="Guidance Scale",
+                                minimum=1.0,
+                                maximum=8.0,
+                                value=3.4,
+                                step=0.1,
+                            )
+                        with gr.Row():
+                            musicgen_stream_delay = gr.Slider(
+                                label="Stream Delay Seconds",
+                                minimum=2,
+                                maximum=240,
+                                value=45,
+                                step=1,
+                            )
+                            musicgen_crossfade_seconds = gr.Slider(
+                                label="Crossfade Seconds",
+                                minimum=0,
+                                maximum=4,
+                                value=1.2,
+                                step=0.1,
+                            )
+                        with gr.Row():
+                            musicgen_start_btn = gr.Button("Start Music", variant="primary")
+                            musicgen_stop_btn = gr.Button("Stop Music")
+                        musicgen_status = gr.Textbox(label="MusicGen Status", value="idle", lines=3)
+                        with gr.Row():
+                            musicgen_audio_now = gr.Audio(
+                                label="Now Playing Feed",
+                                type="filepath",
+                                interactive=False,
+                            )
+                            musicgen_audio_edit = gr.Audio(
+                                label="Editing / Next Feed",
+                                type="filepath",
+                                interactive=False,
+                            )
+                        with gr.Row():
+                            musicgen_now_status = gr.Textbox(label="Now Feed Status", value="now feed: idle", lines=1)
+                            musicgen_edit_status = gr.Textbox(label="Edit Feed Status", value="edit feed: idle", lines=1)
+                        musicgen_audio_preview = gr.Audio(
+                            label="Latest Clip",
+                            type="filepath",
+                            interactive=False,
+                            visible=False,
                         )
 
-            prompt = gr.Textbox(
-                value=default_prompt,
-                label="Prompt",
-                lines=3,
-                interactive=True,
-            )
-            prompt_apply_btn = gr.Button("Enter New Prompt")
-            filter_toggle = gr.Checkbox(value=True, label="Enable AI Filter")
-            with gr.Row():
-                overlay_on_btn = gr.Button("Overlay On")
-                overlay_off_btn = gr.Button("Overlay Off")
+                    with gr.Tab("Quotes"):
+                        with gr.Row():
+                            quote_json_path = gr.Textbox(
+                                label="Quote JSON Path",
+                                value="data/quotes/diffusiongemma_quotes.json",
+                                lines=1,
+                            )
+                            quote_voice = gr.Dropdown(
+                                label="Voice",
+                                choices=voice_choices,
+                                value=voice_choices[0],
+                                allow_custom_value=True,
+                                interactive=True,
+                            )
+                        with gr.Row():
+                            quote_interval = gr.Slider(
+                                label="Quote Interval Seconds",
+                                minimum=0,
+                                maximum=120,
+                                value=15,
+                                step=1,
+                            )
+                            quote_gen_count = gr.Slider(
+                                label="Generate Quote Count",
+                                minimum=1,
+                                maximum=200,
+                                value=30,
+                                step=1,
+                            )
+                        with gr.Row():
+                            quote_include_author = gr.Checkbox(value=False, label="Speak Author")
+                            quote_shuffle = gr.Checkbox(value=True, label="Shuffle")
+                            quote_loop = gr.Checkbox(value=False, label="Loop")
+                            quote_reverb = gr.Checkbox(value=True, label="Reverb")
+                            quote_echo = gr.Checkbox(value=True, label="Last-Word Echo")
+                        with gr.Row():
+                            quote_generate_btn = gr.Button("Generate Quote Data")
+                            quote_start_btn = gr.Button("Start Quote Voice", variant="primary")
+                            quote_stop_btn = gr.Button("Stop Quote Voice")
+                        quote_status = gr.Textbox(label="Quote Voice Status", value="idle", lines=3)
 
-            with gr.Row():
-                musicgen_radio_url = gr.Textbox(
-                    label="MusicGen Radio URL",
-                    value=music_station_map.get(default_music_choice, default_music_radio_url),
-                    lines=1,
-                    scale=3,
-                )
-                musicgen_base_prompt = gr.Textbox(
-                    label="Music Prompt",
-                    value="experimental electronic sound art for an internet installation",
-                    lines=1,
-                    scale=3,
-                )
-            with gr.Row():
-                music_station_choice = gr.Dropdown(
-                    label="Music Station",
-                    choices=initial_music_station_choices,
-                    value=default_music_choice,
-                    allow_custom_value=False,
-                    filterable=True,
-                    interactive=True,
-                )
-                load_music_catalog_btn = gr.Button("Load Music Stations")
-                use_music_station_btn = gr.Button("Use Selected Station")
-            with gr.Accordion("Paste Music Station M3U", open=False):
-                music_station_m3u = gr.Textbox(
-                    label="Music M3U Catalog",
-                    lines=8,
-                    value="#EXTM3U\n#EXTINF:-1,AutoDJ London\nhttp://london-dedicated.myautodj.com:8862/stream",
-                    placeholder="#EXTM3U\n#EXTINF:-1,Station Name\nhttps://example.com/radio",
-                )
-            with gr.Row():
-                musicgen_sample_seconds = gr.Slider(
-                    label="Sample Seconds",
-                    minimum=6,
-                    maximum=30,
-                    value=12,
-                    step=1,
-                )
-                musicgen_gen_seconds = gr.Slider(
-                    label="Gen Seconds",
-                    minimum=6,
-                    maximum=30,
-                    value=12,
-                    step=1,
-                )
-                musicgen_top_k = gr.Slider(
-                    label="Top-k",
-                    minimum=0,
-                    maximum=1000,
-                    value=250,
-                    step=1,
-                )
-            with gr.Row():
-                musicgen_top_p = gr.Slider(
-                    label="Top-p",
-                    minimum=0.05,
-                    maximum=1.0,
-                    value=0.95,
-                    step=0.01,
-                )
-                musicgen_temperature = gr.Slider(
-                    label="Temperature",
-                    minimum=0.1,
-                    maximum=2.0,
-                    value=1.0,
-                    step=0.05,
-                )
-                musicgen_guidance_scale = gr.Slider(
-                    label="Guidance Scale",
-                    minimum=1.0,
-                    maximum=8.0,
-                    value=3.0,
-                    step=0.1,
-                )
-            with gr.Row():
-                musicgen_stream_delay = gr.Slider(
-                    label="Stream Delay Seconds",
-                    minimum=2,
-                    maximum=240,
-                    value=180,
-                    step=1,
-                )
-                musicgen_crossfade_seconds = gr.Slider(
-                    label="Crossfade Seconds",
-                    minimum=0,
-                    maximum=4,
-                    value=1.5,
-                    step=0.1,
-                )
-            with gr.Row():
-                musicgen_start_btn = gr.Button("Start Music Stream")
-                musicgen_stop_btn = gr.Button("Stop Music Stream")
-                fanout_music_btn = gr.Button("Start Twitch Fanout With Music")
+                    with gr.Tab("SFX"):
+                        sfx_prompts = gr.Textbox(
+                            label="AudioGen Prompts",
+                            value=default_sfx_prompts,
+                            lines=5,
+                        )
+                        with gr.Row():
+                            sfx_duration = gr.Slider(
+                                label="SFX Seconds",
+                                minimum=1,
+                                maximum=8,
+                                value=3,
+                                step=0.5,
+                            )
+                            sfx_interval = gr.Slider(
+                                label="Interval Seconds",
+                                minimum=5,
+                                maximum=180,
+                                value=35,
+                                step=1,
+                            )
+                            sfx_volume = gr.Slider(
+                                label="SFX Pre-Bus Volume",
+                                minimum=0.0,
+                                maximum=1.0,
+                                value=0.35,
+                                step=0.05,
+                            )
+                            sfx_seed = gr.Number(
+                                label="Seed",
+                                value=4242,
+                                precision=0,
+                            )
+                            sfx_cpu_mode = gr.Checkbox(value=False, label="CPU Mode")
+                        with gr.Row():
+                            sfx_start_btn = gr.Button("Start AudioGen SFX", variant="primary")
+                            sfx_stop_btn = gr.Button("Stop AudioGen SFX")
+                        sfx_status = gr.Textbox(label="AudioGen SFX Status", value="idle", lines=3)
 
-            with gr.Row():
-                fanout_enable_youtube = gr.Checkbox(value=False, label="Fanout YouTube")
-                fanout_enable_twitch = gr.Checkbox(value=True, label="Fanout Twitch")
-                fanout_enable_facebook = gr.Checkbox(value=False, label="Fanout Facebook")
-                fanout_enable_quote_voice = gr.Checkbox(value=True, label="Mix Quote Voice")
-                fanout_use_audio_bus = gr.Checkbox(value=True, label="Use Audio Bus (udp 5006)")
-
-            with gr.Accordion("Audio Bus", open=False):
-                with gr.Row():
-                    audio_bus_music_volume = gr.Slider(
-                        label="Bus Music Volume",
-                        minimum=0.0,
-                        maximum=2.0,
-                        value=0.65,
-                        step=0.05,
-                    )
-                    audio_bus_tts_volume = gr.Slider(
-                        label="Bus Quote Volume",
-                        minimum=0.0,
-                        maximum=4.0,
-                        value=2.8,
-                        step=0.1,
-                    )
-                    audio_bus_bitrate = gr.Dropdown(
-                        label="Bus Audio Bitrate",
-                        choices=["96k", "128k", "160k", "192k"],
-                        value="128k",
-                        allow_custom_value=False,
-                        interactive=True,
-                    )
-                with gr.Row():
-                    audio_bus_start_btn = gr.Button("Start Audio Bus")
-                    audio_bus_stop_btn = gr.Button("Stop Audio Bus")
-                audio_bus_status = gr.Textbox(label="Audio Bus Status", value=refresh_audio_mix_bus_status(), lines=2)
-
-            with gr.Row():
-                music_status_light = gr.HTML(_status_light_html("Music", False))
-                quote_status_light = gr.HTML(_status_light_html("Quote Voice", False))
-                audio_bus_status_light = gr.HTML(_status_light_html("Audio Bus", False))
-
-            fanout_status = gr.Textbox(label="Fanout Status", value="idle", lines=3)
-            musicgen_status = gr.Textbox(label="MusicGen Status", value="idle", lines=3)
-            with gr.Row():
-                musicgen_audio_now = gr.Audio(
-                    label="Now Playing Feed",
-                    type="filepath",
-                    interactive=False,
-                )
-                musicgen_audio_edit = gr.Audio(
-                    label="Editing / Next Feed",
-                    type="filepath",
-                    interactive=False,
-                )
-            with gr.Row():
-                musicgen_now_status = gr.Textbox(
-                    label="Now Feed Status",
-                    value="now feed: idle",
-                    lines=1,
-                )
-                musicgen_edit_status = gr.Textbox(
-                    label="Edit Feed Status",
-                    value="edit feed: idle",
-                    lines=1,
-                )
-
-            musicgen_audio_preview = gr.Audio(
-                label="Latest Clip (Fallback)",
-                type="filepath",
-                interactive=False,
-                visible=False,
-            )
-
-            with gr.Accordion("Quote Voice", open=False):
-                with gr.Row():
-                    quote_json_path = gr.Textbox(
-                        label="Quote JSON Path",
-                        value="data/quotes/diffusiongemma_quotes.json",
-                        lines=1,
-                    )
-                    quote_voice = gr.Dropdown(
-                        label="Voice",
-                        choices=voice_choices,
-                        value=voice_choices[0],
-                        allow_custom_value=True,
-                        interactive=True,
-                    )
-                with gr.Row():
-                    quote_interval = gr.Slider(
-                        label="Quote Interval Seconds",
-                        minimum=0,
-                        maximum=120,
-                        value=30,
-                        step=1,
-                    )
-                    quote_gen_count = gr.Slider(
-                        label="Generate Quote Count",
-                        minimum=1,
-                        maximum=200,
-                        value=30,
-                        step=1,
-                    )
-                with gr.Row():
-                    quote_include_author = gr.Checkbox(value=True, label="Speak Author Name")
-                    quote_shuffle = gr.Checkbox(value=True, label="Shuffle Quotes")
-                    quote_loop = gr.Checkbox(value=False, label="Loop Quotes")
-                    quote_reverb = gr.Checkbox(value=True, label="Quote Reverb")
-                    quote_echo = gr.Checkbox(value=True, label="Quote Last-Word Echo")
-                with gr.Row():
-                    quote_generate_btn = gr.Button("Generate Quote Data")
-                    quote_start_btn = gr.Button("Start Quote Voice")
-                    quote_stop_btn = gr.Button("Stop Quote Voice")
-                quote_status = gr.Textbox(label="Quote Voice Status", value="idle", lines=3)
-
-            ref_image_input = gr.Image(
-                label="Reference Image",
-                type="numpy",
-                sources=["upload"],
-                image_mode="RGB",
-            )
-            ref_image_apply_btn = gr.Button("Apply Image Prompt")
+                    with gr.Tab("Broadcast"):
+                        with gr.Row():
+                            fanout_enable_twitch = gr.Checkbox(value=True, label="Twitch")
+                            fanout_enable_youtube = gr.Checkbox(value=False, label="YouTube")
+                            fanout_enable_facebook = gr.Checkbox(value=False, label="Facebook")
+                            fanout_enable_quote_voice = gr.Checkbox(value=True, label="Quote Voice")
+                            fanout_enable_sfx = gr.Checkbox(value=False, label="SFX")
+                            fanout_use_audio_bus = gr.Checkbox(value=True, label="Audio Bus")
+                            fanout_enable_monitor = gr.Checkbox(value=True, label="Local Monitor")
+                        with gr.Row():
+                            audio_bus_music_volume = gr.Slider(
+                                label="Bus Music Volume",
+                                minimum=0.0,
+                                maximum=2.0,
+                                value=0.85,
+                                step=0.05,
+                            )
+                            audio_bus_tts_volume = gr.Slider(
+                                label="Bus Quote Volume",
+                                minimum=0.0,
+                                maximum=4.0,
+                                value=1.55,
+                                step=0.1,
+                            )
+                            audio_bus_sfx_volume = gr.Slider(
+                                label="Bus SFX Volume",
+                                minimum=0.0,
+                                maximum=2.0,
+                                value=0.25,
+                                step=0.05,
+                            )
+                            audio_bus_bitrate = gr.Dropdown(
+                                label="Audio Bitrate",
+                                choices=["96k", "128k", "160k", "192k"],
+                                value="128k",
+                                allow_custom_value=False,
+                                interactive=True,
+                            )
+                        with gr.Row():
+                            fanout_music_btn = gr.Button("Start Fanout", variant="primary")
+                            audio_bus_start_btn = gr.Button("Start Audio Bus")
+                            audio_bus_stop_btn = gr.Button("Stop Audio Bus")
+                        with gr.Row():
+                            monitor_start_btn = gr.Button("Start Monitor")
+                            monitor_stop_btn = gr.Button("Stop Monitor")
+                        with gr.Row():
+                            music_status_light = gr.HTML(_status_light_html("Music", False))
+                            quote_status_light = gr.HTML(_status_light_html("Quote Voice", False))
+                            sfx_status_light = gr.HTML(_status_light_html("SFX", False))
+                            audio_bus_status_light = gr.HTML(_status_light_html("Audio Bus", False))
+                        fanout_status = gr.Textbox(label="Fanout Status", value="idle", lines=3)
+                        audio_bus_status = gr.Textbox(label="Audio Bus Status", value=refresh_audio_mix_bus_status(), lines=2)
+                        monitor_status = gr.Textbox(label="Monitor Status", value=refresh_stream_monitor_status(), lines=3)
 
         musicgen_timer = gr.Timer(value=2.0, active=True)
 
@@ -2178,10 +2606,16 @@ def main():
             outputs=[source_input, source_output, source_status],
         )
 
+        auto_prompt_toggle.change(
+            set_auto_image_prompt_enabled,
+            inputs=[auto_prompt_toggle],
+            outputs=[image_prompt_status, prompt, prompt_apply_btn],
+        )
+
         prompt_apply_btn.click(
-            set_prompt,
+            apply_custom_image_prompt,
             inputs=[prompt],
-            outputs=None,
+            outputs=[image_prompt_status],
         )
 
         # Prompt auto-change updates can occasionally arrive as empty queue
@@ -2212,6 +2646,17 @@ def main():
             outputs=[musicgen_status],
         )
 
+        sfx_start_btn.click(
+            start_audiogen_sfx_stream,
+            inputs=[sfx_prompts, sfx_duration, sfx_interval, sfx_volume, sfx_seed, sfx_cpu_mode],
+            outputs=[sfx_status],
+        )
+
+        sfx_stop_btn.click(
+            stop_audiogen_sfx_stream,
+            outputs=[sfx_status],
+        )
+
         fanout_music_btn.click(
             start_fanout_with_music_ui,
             inputs=[
@@ -2222,20 +2667,33 @@ def main():
                 fanout_use_audio_bus,
                 audio_bus_music_volume,
                 audio_bus_tts_volume,
+                fanout_enable_sfx,
+                audio_bus_sfx_volume,
                 audio_bus_bitrate,
+                fanout_enable_monitor,
             ],
             outputs=[fanout_status, musicgen_status],
         )
 
         audio_bus_start_btn.click(
             start_audio_mix_bus_ui,
-            inputs=[audio_bus_music_volume, audio_bus_tts_volume, audio_bus_bitrate],
+            inputs=[audio_bus_music_volume, audio_bus_tts_volume, audio_bus_bitrate, fanout_enable_sfx, audio_bus_sfx_volume],
             outputs=[audio_bus_status],
         )
 
         audio_bus_stop_btn.click(
             stop_audio_mix_bus_ui,
             outputs=[audio_bus_status],
+        )
+
+        monitor_start_btn.click(
+            start_stream_monitor_http_ui,
+            outputs=[monitor_status],
+        )
+
+        monitor_stop_btn.click(
+            stop_stream_monitor_http_ui,
+            outputs=[monitor_status],
         )
 
         quote_generate_btn.click(
@@ -2295,12 +2753,17 @@ def main():
 
         musicgen_timer.tick(
             poll_audio_service_lights,
-            outputs=[music_status_light, quote_status_light, audio_bus_status_light],
+            outputs=[music_status_light, quote_status_light, sfx_status_light, audio_bus_status_light],
         )
 
         musicgen_timer.tick(
             refresh_audio_mix_bus_status,
             outputs=[audio_bus_status],
+        )
+
+        musicgen_timer.tick(
+            refresh_stream_monitor_status,
+            outputs=[monitor_status],
         )
 
         # Reference image updates are applied manually when needed to avoid

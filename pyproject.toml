@@ -4,6 +4,7 @@ version = "1.0"
 requires-python = ">=3.12"
 dependencies = [
     "transformers",
+    "torchaudio @ https://download.pytorch.org/whl/cu128/torchaudio-2.11.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl",
     "diffusers",
     "numpy<2.3",
     "nvidia-riva-client>=2.26.0",

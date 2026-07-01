@@ -123,7 +123,10 @@ def _build_prompt(descriptors: dict, base_prompt: str) -> str:
 
     return (
         f"{base_prompt}, {intensity} dynamics, {tone} timbre, "
-        f"around {tempo} bpm, evolving instrumental texture, no vocals"
+        f"around {tempo} bpm, bassline and chords lead the track, deep fat sub bassline, "
+        f"cool minor seventh and ninth chord progression, lush warm synth pads, airy ethereal lead melodies throughout, "
+        f"light understated drums tucked behind the harmony, steady downtempo groove, dry instrumental mix, "
+        f"no vocals, no drum solo, no heavy percussion, no noise wash, no drone"
     )
 
 
@@ -142,6 +145,8 @@ def _start_audio_udp_encoder(sample_rate: int, audio_udp_url: str):
         str(sample_rate),
         "-i",
         "-",
+        "-af",
+        "highpass=f=35,lowpass=f=12000,alimiter=limit=0.85",
         "-c:a",
         "aac",
         "-b:a",
@@ -183,6 +188,22 @@ def _load_bootstrap_clips(out_dir: Path, max_clips: int, sample_rate: int, sf_mo
     return clips
 
 
+def _load_conditioning_audio(wav_path: str, sample_rate: int, seconds: float, sf_module) -> np.ndarray | None:
+    try:
+        arr, sr = sf_module.read(wav_path, dtype="float32", always_2d=False)
+    except Exception:
+        return None
+    if int(sr) != int(sample_rate):
+        return None
+    if isinstance(arr, np.ndarray) and arr.ndim == 2:
+        arr = arr.mean(axis=1)
+    arr = np.asarray(arr, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return None
+    max_samples = max(1, int(seconds * sample_rate))
+    return np.clip(arr[-max_samples:], -0.98, 0.98)
+
+
 def _playback_worker(
     audio_queue: "queue.Queue[tuple[int, np.ndarray] | None]",
     sample_rate: int,
@@ -203,6 +224,7 @@ def _playback_worker(
     loop_source = np.zeros((0,), dtype=np.float32)
     loop_cursor = 0
     underrun_announced = False
+    next_write_at = time.monotonic()
 
     if bootstrap_clips:
         for boot_clip in bootstrap_clips:
@@ -213,6 +235,7 @@ def _playback_worker(
         )
 
     def _stream_array(arr: np.ndarray):
+        nonlocal next_write_at
         if arr is None or arr.size == 0:
             return
         if udp_proc is None or udp_proc.stdin is None:
@@ -225,7 +248,12 @@ def _playback_worker(
             chunk = arr[idx : idx + chunk_size]
             udp_proc.stdin.write(chunk.astype(np.float32, copy=False).tobytes())
             idx += chunk_size
-            time.sleep(chunk.shape[0] / sample_rate)
+            next_write_at += chunk.shape[0] / sample_rate
+            now = time.monotonic()
+            if next_write_at - now > 0:
+                time.sleep(next_write_at - now)
+            elif now - next_write_at > 0.5:
+                next_write_at = now
 
     def _stream_silence(seconds: float):
         if seconds <= 0:
@@ -288,8 +316,8 @@ def _playback_worker(
             pending_tail = tail
             return
 
-        ramp = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
-        mixed = pending_tail * (1.0 - ramp) + head * ramp
+        phase = np.linspace(0.0, np.pi / 2, fade_samples, endpoint=False, dtype=np.float32)
+        mixed = pending_tail * np.cos(phase) + head * np.sin(phase)
         _stream_array(mixed)
         _stream_array(middle)
         pending_tail = tail
@@ -302,8 +330,13 @@ def _playback_worker(
 
     if buffered_seconds >= delay_seconds and len(buffer) > 0:
         print(f"[musicgen] bootstrap buffer ready: {buffered_seconds:.1f}s")
+        streamed_bootstrap_seconds = 0.0
         for q_index, queued_clip in buffer:
+            if streamed_bootstrap_seconds >= delay_seconds:
+                break
             _stream_clip(q_index, queued_clip)
+            streamed_bootstrap_seconds += queued_clip.shape[0] / sample_rate
+        print(f"[musicgen] streamed {streamed_bootstrap_seconds:.1f}s bootstrap intro before live queue")
         buffer = []
         started = True
 
@@ -419,6 +452,18 @@ def main() -> None:
         default=3.0,
         help="Classifier-free guidance scale for MusicGen generation",
     )
+    parser.add_argument(
+        "--drunk-walk",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Slightly random-walk generation parameters between batches",
+    )
+    parser.add_argument(
+        "--drunk-walk-strength",
+        type=float,
+        default=0.0,
+        help="Scale for drunk-walk parameter drift; 1.0 is subtle",
+    )
     parser.add_argument("--sample-rate", type=int, default=32000, help="Audio sample rate")
     parser.add_argument("--pause-seconds", type=float, default=0.0, help="Pause between loops")
     parser.add_argument(
@@ -443,6 +488,18 @@ def main() -> None:
         default="experimental electronic sound art for an internet installation",
         help="Prompt seed for generation",
     )
+    parser.add_argument(
+        "--conditioning-mode",
+        choices=("text", "chroma", "continuation", "hybrid"),
+        default="text",
+        help="Use text only, radio chroma, previous-output continuation, or hybrid conditioning",
+    )
+    parser.add_argument(
+        "--conditioning-seconds",
+        type=float,
+        default=8.0,
+        help="Seconds of audio to use for chroma/continuation conditioning",
+    )
     args = parser.parse_args()
 
     _check_ffmpeg()
@@ -456,10 +513,21 @@ def main() -> None:
     import torch
     from transformers import AutoProcessor, MusicgenForConditionalGeneration
 
+    use_melody_conditioning = args.conditioning_mode != "text"
+    model_id = args.model
+    if use_melody_conditioning and "melody" not in model_id.lower():
+        model_id = "facebook/musicgen-melody"
+        print(f"[musicgen] conditioning mode {args.conditioning_mode} requires melody model; using {model_id}")
+    if use_melody_conditioning:
+        from transformers import MusicgenMelodyForConditionalGeneration
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
-    processor = AutoProcessor.from_pretrained(args.model)
-    model = MusicgenForConditionalGeneration.from_pretrained(args.model, torch_dtype=dtype)
+    processor = AutoProcessor.from_pretrained(model_id)
+    if use_melody_conditioning:
+        model = MusicgenMelodyForConditionalGeneration.from_pretrained(model_id, torch_dtype=dtype)
+    else:
+        model = MusicgenForConditionalGeneration.from_pretrained(model_id, torch_dtype=dtype)
     model = model.to(device)
     model.eval()
 
@@ -470,6 +538,7 @@ def main() -> None:
     top_p = max(0.05, min(1.0, float(args.top_p)))
     guidance_scale = max(1.0, float(args.guidance_scale))
     parallel_clips = max(1, int(args.parallel_clips))
+    drunk_walk_strength = max(0.0, float(args.drunk_walk_strength))
     seed_base = int(args.seed)
     if seed_base < 0:
         seed_base = int(time.time() * 1000) % (2**31 - 1)
@@ -517,96 +586,202 @@ def main() -> None:
     resolved_radio_url = _resolve_playlist_stream_url(args.radio_url)
     if resolved_radio_url != args.radio_url:
         print(f"[musicgen] resolved playlist URL -> {resolved_radio_url}")
-    index = 0
 
-    while True:
-        with tempfile.TemporaryDirectory(prefix="musicgen_radio_") as tmpdir:
-            radio_wav = os.path.join(tmpdir, "radio.wav")
-            _sample_radio_to_wav(resolved_radio_url, radio_wav, args.sample_seconds, args.sample_rate)
-            descriptors = _extract_descriptors(radio_wav)
-            prompt = _build_prompt(descriptors, args.base_prompt)
+    def _generation_loop() -> None:
+        current_top_k = top_k
+        current_top_p = top_p
+        current_temperature = temperature
+        current_guidance_scale = guidance_scale
+        previous_generated_audio: np.ndarray | None = None
 
-            batch_prompts = [prompt for _ in range(parallel_clips)]
-            inputs = processor(text=batch_prompts, padding=True, return_tensors="pt")
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-            loop_seed = (seed_base + index) % (2**31 - 1)
-            with torch.no_grad():
-                if device == "cuda":
-                    with torch.autocast(device_type="cuda", dtype=torch.float16):
-                        generated = model.generate(
-                            **inputs,
-                            do_sample=True,
-                            top_k=top_k,
-                            top_p=top_p,
-                            temperature=temperature,
-                            guidance_scale=guidance_scale,
-                            max_new_tokens=max_new_tokens,
-                            
+        def _walk_params() -> tuple[int, float, float, float]:
+            nonlocal current_top_k, current_top_p, current_temperature, current_guidance_scale
+            if args.drunk_walk and drunk_walk_strength > 0:
+                current_top_k += int(round(random.gauss(0.0, 12.0) * drunk_walk_strength))
+                current_top_p += random.gauss(0.0, 0.012) * drunk_walk_strength
+                current_temperature += random.gauss(0.0, 0.025) * drunk_walk_strength
+                current_guidance_scale += random.gauss(0.0, 0.08) * drunk_walk_strength
+
+            current_top_k = max(40, min(280, current_top_k))
+            current_top_p = max(0.78, min(0.96, current_top_p))
+            current_temperature = max(0.72, min(1.08, current_temperature))
+            current_guidance_scale = max(2.8, min(4.2, current_guidance_scale))
+            return (
+                int(current_top_k),
+                round(float(current_top_p), 3),
+                round(float(current_temperature), 3),
+                round(float(current_guidance_scale), 3),
+            )
+
+        index = 0
+        while True:
+            try:
+                with tempfile.TemporaryDirectory(prefix="musicgen_radio_") as tmpdir:
+                    radio_wav = os.path.join(tmpdir, "radio.wav")
+                    radio_sample_ok = False
+                    try:
+                        _sample_radio_to_wav(resolved_radio_url, radio_wav, args.sample_seconds, args.sample_rate)
+                        descriptors = _extract_descriptors(radio_wav)
+                        radio_sample_ok = True
+                    except Exception as sample_exc:
+                        descriptors = {"tempo": 92.0, "rms": 0.04, "centroid": 1400.0}
+                        print(
+                            f"[musicgen] radio sample unavailable "
+                            f"({type(sample_exc).__name__}: {sample_exc}); using prompt-only generation",
+                            flush=True,
                         )
-                else:
-                    generated = model.generate(
-                        **inputs,
-                        do_sample=True,
-                        top_k=top_k,
-                        top_p=top_p,
-                        temperature=temperature,
-                        guidance_scale=guidance_scale,
-                        max_new_tokens=max_new_tokens,
-                        
+                    prompt = _build_prompt(descriptors, args.base_prompt)
+                    batch_top_k, batch_top_p, batch_temperature, batch_guidance_scale = _walk_params()
+                    print(
+                        f"[musicgen] params top_k={batch_top_k} top_p={batch_top_p:.3f} "
+                        f"temperature={batch_temperature:.3f} guidance_scale={batch_guidance_scale:.3f}",
+                        flush=True,
                     )
 
-            batch_size = int(generated.shape[0]) if hasattr(generated, "shape") else parallel_clips
-            for batch_pos in range(batch_size):
-                audio = generated[batch_pos].detach().cpu().numpy()
-                # transformers MusicGen returns (channels, samples); soundfile expects (samples, channels).
-                if audio.ndim == 2 and audio.shape[0] <= 8:
-                    audio = audio.T
-                if audio.ndim == 1:
-                    audio = np.expand_dims(audio, axis=1)
-                audio = audio.astype(np.float32, copy=False)
+                    batch_prompts = [prompt for _ in range(parallel_clips)]
+                    conditioning_source = "text"
+                    conditioning_audio = None
+                    if args.conditioning_mode in ("continuation", "hybrid") and previous_generated_audio is not None:
+                        conditioning_audio = previous_generated_audio
+                        conditioning_source = "previous_generated"
+                    elif radio_sample_ok and args.conditioning_mode in ("chroma", "hybrid"):
+                        conditioning_audio = _load_conditioning_audio(
+                            radio_wav,
+                            sample_rate=args.sample_rate,
+                            seconds=max(1.0, float(args.conditioning_seconds)),
+                            sf_module=sf,
+                        )
+                        conditioning_source = "radio_chroma" if conditioning_audio is not None else "text"
 
-                clip_name = f"musicgen_clip_{index:06d}.wav"
-                meta_name = f"musicgen_clip_{index:06d}.json"
-                clip_path = out_dir / clip_name
-                meta_path = out_dir / meta_name
+                    if use_melody_conditioning and conditioning_audio is not None:
+                        conditioning_batch = [conditioning_audio for _ in range(parallel_clips)]
+                        inputs = processor(
+                            text=batch_prompts,
+                            audio=conditioning_batch,
+                            sampling_rate=args.sample_rate,
+                            padding=True,
+                            return_tensors="pt",
+                        )
+                    else:
+                        inputs = processor(text=batch_prompts, padding=True, return_tensors="pt")
+                    inputs = {k: v.to(device) for k, v in inputs.items()}
+                    loop_seed = seed_base + index
+                    torch.manual_seed(loop_seed)
+                    if device == "cuda":
+                        torch.cuda.manual_seed_all(loop_seed)
+                    generation_started = time.monotonic()
+                    with torch.no_grad():
+                        if device == "cuda":
+                            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                                generated = model.generate(
+                                    **inputs,
+                                    do_sample=True,
+                                    top_k=batch_top_k,
+                                    top_p=batch_top_p,
+                                    temperature=batch_temperature,
+                                    guidance_scale=batch_guidance_scale,
+                                    max_new_tokens=max_new_tokens,
+                                )
+                        else:
+                            generated = model.generate(
+                                **inputs,
+                                do_sample=True,
+                                top_k=batch_top_k,
+                                top_p=batch_top_p,
+                                temperature=batch_temperature,
+                                guidance_scale=batch_guidance_scale,
+                                max_new_tokens=max_new_tokens,
+                            )
 
-                sf.write(str(clip_path), audio, sample_rate)
-                _write_marker(edit_marker_path, str(clip_path))
-                if index == 0:
-                    _write_marker(now_marker_path, str(clip_path))
+                    batch_size = int(generated.shape[0]) if hasattr(generated, "shape") else parallel_clips
+                    generation_wall_seconds = max(0.001, time.monotonic() - generation_started)
+                    generated_audio_seconds = max(0.001, float(batch_size * args.gen_seconds))
+                    print(
+                        f"[musicgen] generated {generated_audio_seconds:.1f}s audio "
+                        f"in {generation_wall_seconds:.1f}s wall "
+                        f"(realtime_factor={generation_wall_seconds / generated_audio_seconds:.2f})",
+                        flush=True,
+                    )
+                    for batch_pos in range(batch_size):
+                        audio = generated[batch_pos].detach().cpu().numpy()
+                        if audio.ndim == 2 and audio.shape[0] <= 8:
+                            audio = audio.T
+                        if audio.ndim == 1:
+                            audio = np.expand_dims(audio, axis=1)
+                        audio = audio.astype(np.float32, copy=False)
 
-                mono_audio = audio.mean(axis=1) if audio.ndim == 2 else audio.squeeze()
-                if mono_audio.ndim == 0:
-                    mono_audio = np.array([float(mono_audio)], dtype=np.float32)
-                mono_audio = mono_audio.astype(np.float32, copy=False)
-                if audio_queue is not None:
-                    audio_queue.put((index, np.clip(mono_audio, -0.98, 0.98)))
-                meta = {
-                    "index": index,
-                    "batch_pos": batch_pos,
-                    "parallel_clips": parallel_clips,
-                    "seed": loop_seed,
-                    "prompt": prompt,
-                    "descriptors": descriptors,
-                    "model": args.model,
-                    "sample_seconds": args.sample_seconds,
-                    "gen_seconds": args.gen_seconds,
-                    "top_k": top_k,
-                    "top_p": top_p,
-                    "temperature": temperature,
-                    "guidance_scale": guidance_scale,
-                }
-                meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+                        clip_name = f"musicgen_clip_{index:06d}.wav"
+                        meta_name = f"musicgen_clip_{index:06d}.json"
+                        clip_path = out_dir / clip_name
+                        meta_path = out_dir / meta_name
 
-                print(f"[musicgen] wrote {clip_path}")
-                index += 1
+                        sf.write(str(clip_path), audio, sample_rate)
+                        _write_marker(edit_marker_path, str(clip_path))
+                        if index == 0:
+                            _write_marker(now_marker_path, str(clip_path))
 
-        time.sleep(max(0.0, args.pause_seconds))
+                        mono_audio = audio.mean(axis=1) if audio.ndim == 2 else audio.squeeze()
+                        if mono_audio.ndim == 0:
+                            mono_audio = np.array([float(mono_audio)], dtype=np.float32)
+                        mono_audio = mono_audio.astype(np.float32, copy=False)
+                        previous_generated_audio = mono_audio[-int(max(1.0, float(args.conditioning_seconds)) * sample_rate) :].copy()
+                        if audio_queue is not None:
+                            audio_queue.put((index, np.clip(mono_audio, -0.98, 0.98)))
+                        meta = {
+                            "index": index,
+                            "batch_pos": batch_pos,
+                            "parallel_clips": parallel_clips,
+                            "seed": loop_seed,
+                            "prompt": prompt,
+                            "descriptors": descriptors,
+                            "model": model_id,
+                            "sample_seconds": args.sample_seconds,
+                            "gen_seconds": args.gen_seconds,
+                            "conditioning_mode": args.conditioning_mode,
+                            "conditioning_source": conditioning_source,
+                            "conditioning_seconds": args.conditioning_seconds,
+                            "top_k": batch_top_k,
+                            "top_p": batch_top_p,
+                            "temperature": batch_temperature,
+                            "guidance_scale": batch_guidance_scale,
+                            "drunk_walk": bool(args.drunk_walk),
+                            "drunk_walk_strength": drunk_walk_strength,
+                        }
+                        meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+                        print(f"[musicgen] wrote {clip_path}")
+                        index += 1
+            except Exception as exc:
+                print(f"[musicgen] generation loop error: {type(exc).__name__}: {exc}")
+                time.sleep(2)
+                continue
+
+            time.sleep(max(0.0, args.pause_seconds))
 
     if audio_queue is not None:
-        audio_queue.put(None)
-    if playback_thread is not None:
-        playback_thread.join(timeout=2)
+        generation_thread = threading.Thread(target=_generation_loop, daemon=True)
+        generation_thread.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("[musicgen] shutting down...")
+    finally:
+        if audio_queue is not None:
+            audio_queue.put(None)
+        if playback_thread is not None:
+            playback_thread.join(timeout=5)
+        if udp_proc is not None:
+            try:
+                if udp_proc.stdin is not None:
+                    udp_proc.stdin.close()
+                udp_proc.wait(timeout=5)
+            except Exception:
+                try:
+                    udp_proc.kill()
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
