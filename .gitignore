@@ -12,6 +12,9 @@ RIFE-safetensors/
 LivePortrait/
 LivePortrait-code/
 loras/
+lora/*.safetensors
+lora/*.bin
+lora/*.ckpt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
