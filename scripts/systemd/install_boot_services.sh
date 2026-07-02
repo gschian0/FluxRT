@@ -34,7 +34,7 @@ Type=simple
 User=gschi
 WorkingDirectory=/home/gschi/FluxRT
 Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,garbage_collection_threshold:0.8
-ExecStart=/snap/bin/uv run scripts/run_gradio_stream_demo.py --int8 --server-name 0.0.0.0 --server-port 7861 --config-path configs/stream_demo_config.json
+ExecStart=/snap/bin/uv run scripts/run_gradio_stream_demo.py --int8 --server-name 0.0.0.0 --server-port 7862 --config-path configs/stream_demo_config.json
 Restart=always
 RestartSec=5
 KillMode=mixed

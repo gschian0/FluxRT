@@ -30,7 +30,7 @@ PROMPTS = [
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Rotate FluxRT prompts through the Gradio API")
-    parser.add_argument("--gradio-url", default="http://127.0.0.1:7861")
+    parser.add_argument("--gradio-url", default="http://127.0.0.1:7862")
     parser.add_argument("--interval", type=float, default=90.0)
     parser.add_argument("--jitter", type=float, default=20.0)
     parser.add_argument("--shuffle", action=argparse.BooleanOptionalAction, default=True)

@@ -74,7 +74,7 @@ def load_bgr(path: str, width: int, height: int) -> np.ndarray | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bridge Gradio processed frames to UDP MPEG-TS")
-    parser.add_argument("--gradio-url", default="http://127.0.0.1:7861")
+    parser.add_argument("--gradio-url", default="http://127.0.0.1:7862")
     parser.add_argument("--udp-url", default="udp://127.0.0.1:5000?pkt_size=1316")
     parser.add_argument("--width", type=int, default=426)
     parser.add_argument("--height", type=int, default=240)

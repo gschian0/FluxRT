@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-APP_PORT="${APP_PORT:-7861}"
+APP_PORT="${APP_PORT:-7862}"
 APP_HOST="${APP_HOST:-0.0.0.0}"
 STREAM_CONFIG_PATH="${STREAM_CONFIG_PATH:-configs/stream_demo_config.json}"
 

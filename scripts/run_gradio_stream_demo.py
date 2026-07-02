@@ -2264,7 +2264,7 @@ def main():
         help="Stream processor config path",
     )
     parser.add_argument(
-        "--server-port", type=int, default=7861, help="Port for stream demo app"
+        "--server-port", type=int, default=7862, help="Port for stream demo app"
     )
     parser.add_argument(
         "--server-name", type=str, default="0.0.0.0", help="Bind address"

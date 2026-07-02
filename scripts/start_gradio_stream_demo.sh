@@ -50,7 +50,7 @@ clear_boot_state() {
 clear_boot_state
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:128
-APP_PORT="${APP_PORT:-7861}"
+APP_PORT="${APP_PORT:-7862}"
 APP_HOST="${APP_HOST:-0.0.0.0}"
 STREAM_CONFIG_PATH="${STREAM_CONFIG_PATH:-configs/stream_demo_config.json}"
 

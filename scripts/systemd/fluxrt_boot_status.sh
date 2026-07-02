@@ -8,10 +8,10 @@ systemctl --no-pager --full status fluxrt-gradio.service fluxrt-cloudflared.serv
 
 echo
 echo "=== app health ==="
-if curl -fsS -m 5 http://127.0.0.1:7861 >/dev/null; then
-  echo "gradio: up on 7861"
+if curl -fsS -m 5 http://127.0.0.1:7862 >/dev/null; then
+  echo "gradio: up on 7862"
 else
-  echo "gradio: not reachable on 7861"
+  echo "gradio: not reachable on 7862"
 fi
 
 echo
