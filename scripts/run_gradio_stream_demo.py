@@ -840,6 +840,7 @@ _show_last_changed = time.time()
 _current_ticker_idx = 0
 _ticker_last_changed = time.time()
 _ticker_scroll_offset = 0.0
+ENABLE_QUOTE_TICKER = False
 
 
 def _fit_text_to_width(text: str, max_width: int, font_scale: float, thickness: int) -> str:
@@ -856,6 +857,18 @@ def _fit_text_to_width(text: str, max_width: int, font_scale: float, thickness: 
     return "..."
 
 
+def _normalize_display_frame(frame_bgr: np.ndarray) -> np.ndarray:
+    frame = np.asarray(frame_bgr)
+    if frame.dtype == np.uint8:
+        return frame
+    frame = frame.astype(np.float32, copy=False)
+    # Some inference/display paths emit floats in [0, 1]; drawing overlays on those
+    # directly can produce effectively black output when later interpreted as uint8.
+    if frame.size and float(np.nanmax(frame)) <= 1.5:
+        frame = frame * 255.0
+    return np.clip(frame, 0, 255).astype(np.uint8)
+
+
 def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
     global _current_show_str, _show_last_changed, _current_ticker_idx, _ticker_last_changed, _ticker_scroll_offset
     now = time.time()
@@ -865,14 +878,13 @@ def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
         _current_show_str = random.choice(SHOW_NAMES)
         _show_last_changed = now
 
-    # Rotate ticker quote every 12 seconds
-    quotes = _load_ticker_quotes()
-    if quotes and now - _ticker_last_changed > 12.0:
+    quotes = _load_ticker_quotes() if ENABLE_QUOTE_TICKER else []
+    if ENABLE_QUOTE_TICKER and quotes and now - _ticker_last_changed > 12.0:
         _current_ticker_idx = (_current_ticker_idx + 1) % len(quotes)
         _ticker_last_changed = now
         _ticker_scroll_offset = 0.0
 
-    out = frame_bgr.copy()
+    out = _normalize_display_frame(frame_bgr).copy()
     h, w = out.shape[:2]
     scale = max(0.42, min(1.0, min(w / 640.0, h / 360.0)))
     margin = max(6, int(16 * scale))
@@ -908,9 +920,10 @@ def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
     cv2.putText(out, "LIVE", (live_x, live_y), cv2.FONT_HERSHEY_SIMPLEX, live_font, (255, 255, 255), text_thickness)
     cv2.putText(out, show_text, (show_x, show_y), cv2.FONT_HERSHEY_SIMPLEX, show_font, (255, 255, 255), text_thickness)
 
-    # Scrolling ticker with philosopher quotes (thin bar above the show name bar)
+    # Optional scrolling ticker with philosopher quotes (disabled by default;
+    # this path previously caused black-screen failures in the processed feed).
     ticker_text = ""
-    if quotes:
+    if ENABLE_QUOTE_TICKER and quotes:
         ticker_text = quotes[_current_ticker_idx] if _current_ticker_idx < len(quotes) else ""
     if ticker_text:
         ticker_h = max(18, int(28 * scale))

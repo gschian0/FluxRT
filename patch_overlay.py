@@ -58,6 +58,17 @@ SHOW_NAMES = [
 
 _current_show_str = SHOW_NAMES[0]
 _show_last_changed = time.time()
+ENABLE_QUOTE_TICKER = False
+
+
+def _normalize_display_frame(frame_bgr: np.ndarray) -> np.ndarray:
+    frame = np.asarray(frame_bgr)
+    if frame.dtype == np.uint8:
+        return frame
+    frame = frame.astype(np.float32, copy=False)
+    if frame.size and float(np.nanmax(frame)) <= 1.5:
+        frame = frame * 255.0
+    return np.clip(frame, 0, 255).astype(np.uint8)
 
 def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
     global _current_show_str, _show_last_changed
@@ -67,7 +78,7 @@ def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
         _current_show_str = random.choice(SHOW_NAMES)
         _show_last_changed = now
         
-    out = frame_bgr.copy()
+    out = _normalize_display_frame(frame_bgr).copy()
     h, w = out.shape[:2]
     
     # Draw lower third background (semi-transparent)
