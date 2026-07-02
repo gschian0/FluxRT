@@ -259,7 +259,7 @@ def refresh_stream_monitor_status():
 
 
 def start_stream_monitor_http_ui():
-    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/streaming/start_stream_monitor_http.sh"]
+    cmd = ["bash", "-lc", "cd /workspace/FluxRT && scripts/streaming/start_stream_monitor_http.sh"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     msg = (result.stdout or result.stderr or "monitor start attempted").strip()
     if result.returncode != 0:
@@ -270,7 +270,7 @@ def start_stream_monitor_http_ui():
 
 
 def stop_stream_monitor_http_ui():
-    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/streaming/stop_stream_monitor_http.sh"]
+    cmd = ["bash", "-lc", "cd /workspace/FluxRT && scripts/streaming/stop_stream_monitor_http.sh"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     msg = (result.stdout or result.stderr or "monitor stop attempted").strip()
     set_status("monitor http stopped")
@@ -292,7 +292,7 @@ def start_audio_mix_bus_ui(
     if enable_sfx_input:
         env["FORCE_RESTART"] = "1"
     env["AUDIO_BITRATE"] = (audio_bitrate or "128k").strip()
-    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/streaming/start_audio_mix_bus.sh"]
+    cmd = ["bash", "-lc", "cd /workspace/FluxRT && scripts/streaming/start_audio_mix_bus.sh"]
     result = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if result.returncode != 0:
         msg = (result.stderr or result.stdout or "audio bus start failed").strip()
@@ -303,7 +303,7 @@ def start_audio_mix_bus_ui(
 
 
 def stop_audio_mix_bus_ui():
-    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/streaming/stop_audio_mix_bus.sh"]
+    cmd = ["bash", "-lc", "cd /workspace/FluxRT && scripts/streaming/stop_audio_mix_bus.sh"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     msg = (result.stdout or result.stderr or "audio bus stopped").strip()
     set_status("audio mix bus stopped")
@@ -687,7 +687,7 @@ def _cleanup_global_orphan_workers() -> None:
         cmd = parts[2]
         if ppid != 1:
             continue
-        if "/home/gschi/FluxRT/.venv/bin/python3" not in cmd:
+        if "/workspace/FluxRT/.venv/bin/python3" not in cmd:
             continue
         if "multiprocessing.spawn import spawn_main" not in cmd:
             continue
@@ -1116,7 +1116,7 @@ def start_musicgen_stream(
     env["MUSICGEN_BOOTSTRAP_CLIPS"] = "64"
     env["MUSICGEN_AUDIO_UDP_URL"] = "udp://127.0.0.1:5002?pkt_size=1316"
 
-    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/start_musicgen_radio_plus_musicGEN.sh"]
+    cmd = ["bash", "-lc", "cd /workspace/FluxRT && scripts/start_musicgen_radio_plus_musicGEN.sh"]
     result = subprocess.run(cmd, env=env, capture_output=True, text=True)
     if result.returncode != 0:
         msg = (result.stderr or result.stdout or "unknown error").strip()
@@ -1131,7 +1131,7 @@ def start_musicgen_stream(
 
 
 def stop_musicgen_stream():
-    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/stop_musicgen_radio_plus_musicGEN.sh"]
+    cmd = ["bash", "-lc", "cd /workspace/FluxRT && scripts/stop_musicgen_radio_plus_musicGEN.sh"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     # Also kill any orphaned writers in case the worker was started outside this UI.
     subprocess.run(
@@ -1165,7 +1165,7 @@ def start_audiogen_sfx_stream(
     env["AUDIOGEN_SFX_SEED"] = str(int(sfx_seed))
     env["AUDIOGEN_SFX_CPU"] = "1" if sfx_cpu_mode else "0"
     env["AUDIOGEN_SFX_AUDIO_UDP_URL"] = "udp://127.0.0.1:5008?pkt_size=1316"
-    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/start_audiogen_sfx_stream.sh"]
+    cmd = ["bash", "-lc", "cd /workspace/FluxRT && scripts/start_audiogen_sfx_stream.sh"]
     result = subprocess.run(cmd, env=env, capture_output=True, text=True)
     msg = (result.stdout or result.stderr or "audiogen sfx start attempted").strip()
     if result.returncode != 0:
@@ -1176,7 +1176,7 @@ def start_audiogen_sfx_stream(
 
 
 def stop_audiogen_sfx_stream():
-    cmd = ["bash", "-lc", "cd /home/gschi/FluxRT && scripts/stop_audiogen_sfx_stream.sh"]
+    cmd = ["bash", "-lc", "cd /workspace/FluxRT && scripts/stop_audiogen_sfx_stream.sh"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     msg = (result.stdout or result.stderr or "audiogen sfx stopped").strip()
     set_status("audiogen sfx stopped")
@@ -1276,7 +1276,7 @@ def start_fanout_with_music(
     audio_input_url = "udp://127.0.0.1:5006?pkt_size=1316" if use_audio_bus else "udp://127.0.0.1:5002?pkt_size=1316"
 
     launch_cmd = (
-        "cd /home/gschi/FluxRT && "
+        "cd /workspace/FluxRT && "
         "scripts/streaming/stop_mediamtx_fanout.sh || true; "
         "scripts/streaming/stop_rtmp_fanout.sh || true; "
         f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} ENABLE_LOCAL_MONITOR={enable_monitor_str} ENABLE_TTS_OVERLAY={enable_quote_voice_str} AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url "
@@ -1394,7 +1394,7 @@ def generate_quote_data_inline(count: int, output_path: str):
         "bash",
         "-lc",
         (
-            "cd /home/gschi/FluxRT && "
+            "cd /workspace/FluxRT && "
             f"uv run python scripts/generate_quote_data_diffusiongemma.py --count {count} --output '{output_path}'"
         ),
     ]
@@ -1427,7 +1427,7 @@ def start_quote_voice_stream(
         return "quote voice: already running"
 
     cmd_parts = [
-        "cd /home/gschi/FluxRT &&",
+        "cd /workspace/FluxRT &&",
         "uv run python -u scripts/run_quote_tts_from_json.py",
         f"--quotes '{quote_json_path}'",
         f"--voice '{voice_name}'",
@@ -1726,7 +1726,7 @@ def start_auto_prompt_rotator():
     cmd = [
         "bash",
         "-lc",
-        "cd /home/gschi/FluxRT && uv run python -u scripts/streaming/rotate_flux_prompt.py --interval 75 --jitter 15",
+        "cd /workspace/FluxRT && uv run python -u scripts/streaming/rotate_flux_prompt.py --interval 75 --jitter 15",
     ]
     try:
         log_file = open(log_path, "a", encoding="utf-8")
