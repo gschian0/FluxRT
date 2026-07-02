@@ -2,6 +2,15 @@
 
 > **This is a fork of [tensorforger/FluxRT](https://github.com/tensorforger/FluxRT)** tuned for **NVIDIA RTX 5090** GPUs on **RunPod**.
 > It is part of the [AI TV Stack](https://github.com/gschian0/ai-tv-stack-scripts/tree/5090-runpod) — an open-source AI television production engine.
+>
+> Historical note: this stack was first developed and validated on the same class of GPU machine on **GCP**, then ported to **RunPod**.
+>
+> Original GCP baseline:
+> - Container runtime: **NGC container runtime**
+> - Machine type: **g2-standard-4** (4 vCPUs, 16 GB RAM)
+> - CPU platform: **Intel Cascade Lake**
+> - Architecture: **x86_64**
+> - GPU: **1 x NVIDIA L4**
 
 ## What's Different in This Fork (`5090-runpod` branch)
 
