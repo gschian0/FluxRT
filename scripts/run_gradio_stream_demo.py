@@ -769,10 +769,77 @@ SHOW_NAMES = [
     "Neural Network Morning",
     "AI Visionaries",
     "The Matrix Feed",
+    "Deep Dream Cinema",
+    "Latent Space Lounge",
+    "Generative Grooves",
+    "The Diffusion Dispatch",
+    "Synthetic Soul Radio",
+    "Algorithmic Awakening",
+    "Pixel Prophecy Hour",
+    "The Embedding Empire",
+    "Neural Noise Network",
+    "Transformer Theater",
+    "Gradient Garden Live",
+    "Backprop Broadcast",
+    "Stochastic Sessions",
+    "The Attention Agenda",
+    "Prompt Engineering Today",
+    "Hallucination Hour",
+    "Weight Space Weekly",
+    "The Token Tribunal",
+    "Fine-Tune Friday",
+    "Inference Island",
+    "The Loss Landscape",
+    "Checkpoint Chronicles",
+    "Epoch Evening News",
+    "Batch Size Bonanza",
+    "The Regularization Report",
+    "Dropout Diaries",
+    "Activation Atlas Live",
+    "The Manifold Mix",
+    "Vector Vortex TV",
+    "Embedding Echoes",
+    "The Singularity Show",
+    "AGI Alert Network",
+    "Robo Renaissance Radio",
+    "The Turing Test Tribune",
+    "Cybernetic Sunrise",
+    "Holographic Hits",
+    "The Phantom Frequency",
+    "Glitch Gospel Hour",
+    "Vaporwave Vault",
+    "Retro Render Room",
+    "The Polychrome Pulse",
+    "Chromatic Chaos Channel",
 ]
+
+# Philosopher quotes loaded from data/quotes for the ticker
+_TICKER_QUOTES: list[str] = []
+_TICKER_QUOTES_LOADED = False
+
+def _load_ticker_quotes() -> list[str]:
+    global _TICKER_QUOTES, _TICKER_QUOTES_LOADED
+    if _TICKER_QUOTES_LOADED:
+        return _TICKER_QUOTES
+    _TICKER_QUOTES_LOADED = True
+    try:
+        import json
+        import os
+        quotes_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "quotes", "diffusiongemma_quotes.json")
+        if os.path.exists(quotes_path):
+            with open(quotes_path, "r") as f:
+                data = json.load(f)
+            _TICKER_QUOTES = [f'"{item["quote"]}" — {item["philosopher"]}' for item in data if "quote" in item and "philosopher" in item]
+            print(f"[overlay] Loaded {len(_TICKER_QUOTES)} ticker quotes from {quotes_path}")
+    except Exception as exc:
+        print(f"[overlay] Could not load ticker quotes: {exc}")
+    return _TICKER_QUOTES
 
 _current_show_str = SHOW_NAMES[0]
 _show_last_changed = time.time()
+_current_ticker_idx = 0
+_ticker_last_changed = time.time()
+_ticker_scroll_offset = 0.0
 
 
 def _fit_text_to_width(text: str, max_width: int, font_scale: float, thickness: int) -> str:
@@ -790,13 +857,21 @@ def _fit_text_to_width(text: str, max_width: int, font_scale: float, thickness: 
 
 
 def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
-    global _current_show_str, _show_last_changed
+    global _current_show_str, _show_last_changed, _current_ticker_idx, _ticker_last_changed, _ticker_scroll_offset
     now = time.time()
-    
-    if now - _show_last_changed > 15.0:  # Change every 15 seconds
+
+    # Change show name every 15 seconds
+    if now - _show_last_changed > 15.0:
         _current_show_str = random.choice(SHOW_NAMES)
         _show_last_changed = now
-        
+
+    # Rotate ticker quote every 12 seconds
+    quotes = _load_ticker_quotes()
+    if quotes and now - _ticker_last_changed > 12.0:
+        _current_ticker_idx = (_current_ticker_idx + 1) % len(quotes)
+        _ticker_last_changed = now
+        _ticker_scroll_offset = 0.0
+
     out = frame_bgr.copy()
     h, w = out.shape[:2]
     scale = max(0.42, min(1.0, min(w / 640.0, h / 360.0)))
@@ -812,6 +887,7 @@ def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
     live_font = max(0.35, 0.75 * scale)
     show_font = max(0.34, 0.88 * scale)
     clock_font = max(0.34, 0.72 * scale)
+    ticker_font = max(0.30, 0.55 * scale)
     text_thickness = max(1, int(round(2 * scale)))
 
     overlay = out.copy()
@@ -832,6 +908,27 @@ def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
     cv2.putText(out, "LIVE", (live_x, live_y), cv2.FONT_HERSHEY_SIMPLEX, live_font, (255, 255, 255), text_thickness)
     cv2.putText(out, show_text, (show_x, show_y), cv2.FONT_HERSHEY_SIMPLEX, show_font, (255, 255, 255), text_thickness)
 
+    # Scrolling ticker with philosopher quotes (thin bar above the show name bar)
+    ticker_text = ""
+    if quotes:
+        ticker_text = quotes[_current_ticker_idx] if _current_ticker_idx < len(quotes) else ""
+    if ticker_text:
+        ticker_h = max(18, int(28 * scale))
+        ticker_y1 = max(2, bar_y1 - ticker_h - 2)
+        ticker_y2 = bar_y1 - 2
+        cv2.rectangle(out, (margin, ticker_y1), (w - margin, ticker_y2), (10, 10, 30), -1)
+        # Scroll the text horizontally
+        text_w = cv2.getTextSize(ticker_text, cv2.FONT_HERSHEY_SIMPLEX, ticker_font, 1)[0][0]
+        scroll_range = max(1, text_w + w)
+        _ticker_scroll_offset = (_ticker_scroll_offset + max(1.0, 1.5 * scale)) % scroll_range
+        start_x = w - margin - int(_ticker_scroll_offset)
+        if start_x + text_w < margin:
+            _ticker_scroll_offset = 0.0
+            start_x = w - margin
+        # Clip drawing to ticker area
+        ticker_y_text = ticker_y2 - max(4, int(8 * scale))
+        cv2.putText(out, ticker_text, (start_x, ticker_y_text), cv2.FONT_HERSHEY_SIMPLEX, ticker_font, (180, 220, 255), 1)
+
     current_time_str = time.strftime("%H:%M:%S")
     tw, th = cv2.getTextSize(current_time_str, cv2.FONT_HERSHEY_SIMPLEX, clock_font, text_thickness)[0]
     x2 = w - margin
@@ -841,7 +938,7 @@ def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
     cv2.rectangle(out, (x1, y1), (x2, y2), (0, 0, 0), -1)
     cv2.rectangle(out, (x1, y1), (x2, y2), (70, 70, 70), 1)
     cv2.putText(out, current_time_str, (x1 + max(6, int(12 * scale)), y2 - max(5, int(8 * scale))), cv2.FONT_HERSHEY_SIMPLEX, clock_font, (235, 235, 235), text_thickness)
-    
+
     return out
 
 

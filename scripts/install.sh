@@ -22,7 +22,7 @@ log "Checking prerequisites..."
 
 command -v git   &>/dev/null || die "'git' is not installed. Install it with your system package manager."
 command -v conda &>/dev/null || die "'conda' is not installed. Install Miniconda or Anaconda first."
-git lfs version  &>/dev/null || die "'git-lfs' is not installed. Install with: sudo apt install git-lfs  (or brew install git-lfs)"
+git lfs version  &>/dev/null || die "'git-lfs' is not installed. Install with: apt-get install -y git-lfs  (or brew install git-lfs on macOS)"
 
 log "All prerequisites found."
 

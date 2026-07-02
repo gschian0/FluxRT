@@ -35,7 +35,7 @@ OUT_FILE="$OUT_DIR/env-manifest-$TS.txt"
 
   echo "## docker"
   docker --version || true
-  sudo docker info --format 'server={{.ServerVersion}} runtimes={{json .Runtimes}}' 2>/dev/null || true
+  docker info --format 'server={{.ServerVersion}} runtimes={{json .Runtimes}}' 2>/dev/null || true
   echo
 
   echo "## python_uv"

@@ -1,4 +1,41 @@
-# Flux Real-Time (FluxRT)
+# Flux Real-Time (FluxRT) — 5090-RunPod Fork
+
+> **This is a fork of [tensorforger/FluxRT](https://github.com/tensorforger/FluxRT)** tuned for **NVIDIA RTX 5090** GPUs on **RunPod**.
+> It is part of the [AI TV Stack](https://github.com/gschian0/ai-tv-stack-scripts/tree/5090-runpod) — an open-source AI television production engine.
+
+## What's Different in This Fork (`5090-runpod` branch)
+
+- **CUDA 12.8 / Blackwell support** — PyTorch built for RTX 5090
+- **int8 quantization** — FLUX.2-Klein-4B fits in 32 GB VRAM with fast inference
+- **Expanded TV overlay system** — 50 show names (was 8) + scrolling philosopher quote ticker
+- **No `sudo` required** — RunPod containers run as root; scripts auto-detect
+- **`.env` fallback** — checks `/root/.env` then `/workspace/.env`
+- **`HF_API_KEY` → `HF_TOKEN`** automatic mapping
+- **RunPod proxy URL auto-detection** via `RUNPOD_POD_ID` environment variable
+- **Hardcoded path fixes** — `/home/gschi/FluxRT` → `/workspace/FluxRT` for RunPod
+
+## Part of the AI TV Production Engine
+
+This repo lives inside an `ai-tv/` folder alongside the [ai-tv-stack-scripts](https://github.com/gschian0/ai-tv-stack-scripts/tree/5090-runpod) orchestration layer:
+
+```
+ai-tv/
+├── ai-tv-stack-scripts/   # Orchestration: bootstrap, setup, start, stop, check
+└── FluxRT/                # THIS REPO — real-time AI video generation
+```
+
+The stack scripts handle:
+- Full pod setup (uv, PyTorch, model downloads)
+- 8-service tmux orchestration (Gradio, bridge, MusicGen, audio mix, RTMP fanout, HLS monitor, prompt rotator)
+- Station presets (reggae-king, chill-hop, ambient, roots-legacy)
+- Scheduled broadcasts
+- Twitch/YouTube/Facebook RTMP fanout
+
+See the [ai-tv-stack-scripts README](https://github.com/gschian0/ai-tv-stack-scripts/tree/5090-runpod#readme) for full setup instructions.
+
+---
+
+# Original FluxRT Documentation
 
 Real-time **FLUX.2** stream editing pipeline optimized for consumer GPUs.
 

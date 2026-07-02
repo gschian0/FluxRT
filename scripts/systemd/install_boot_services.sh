@@ -4,6 +4,12 @@ set -euo pipefail
 REPO_ROOT="/home/gschi/FluxRT"
 SERVICE_DIR="/etc/systemd/system"
 
+# Use sudo only when not already root (e.g. RunPod containers run as root)
+SUDO=""
+if [[ "$EUID" -ne 0 ]]; then
+  SUDO="sudo"
+fi
+
 if [[ ! -x /snap/bin/uv ]]; then
   echo "Missing /snap/bin/uv"
   exit 1
@@ -17,7 +23,7 @@ fi
 chmod +x "$REPO_ROOT/scripts/systemd/run_cloudflared_quick_tunnel.sh"
 chmod +x "$REPO_ROOT/scripts/systemd/fluxrt_boot_status.sh"
 
-sudo tee "$SERVICE_DIR/fluxrt-gradio.service" >/dev/null <<'EOF'
+${SUDO} tee "$SERVICE_DIR/fluxrt-gradio.service" >/dev/null <<'EOF'
 [Unit]
 Description=FluxRT Gradio Stream Demo
 After=network-online.target
@@ -40,7 +46,7 @@ StandardError=append:/var/log/fluxrt-gradio.log
 WantedBy=multi-user.target
 EOF
 
-sudo tee "$SERVICE_DIR/fluxrt-cloudflared.service" >/dev/null <<'EOF'
+${SUDO} tee "$SERVICE_DIR/fluxrt-cloudflared.service" >/dev/null <<'EOF'
 [Unit]
 Description=FluxRT Cloudflared Quick Tunnel
 After=network-online.target fluxrt-gradio.service
@@ -63,13 +69,13 @@ StandardError=append:/var/log/fluxrt-cloudflared.log
 WantedBy=multi-user.target
 EOF
 
-sudo systemctl daemon-reload
-sudo systemctl enable fluxrt-gradio.service fluxrt-cloudflared.service
-sudo systemctl restart fluxrt-gradio.service fluxrt-cloudflared.service
+${SUDO} systemctl daemon-reload
+${SUDO} systemctl enable fluxrt-gradio.service fluxrt-cloudflared.service
+${SUDO} systemctl restart fluxrt-gradio.service fluxrt-cloudflared.service
 
 echo
 echo "Installed and restarted services:"
-sudo systemctl --no-pager --full status fluxrt-gradio.service fluxrt-cloudflared.service | sed -n '1,40p'
+${SUDO} systemctl --no-pager --full status fluxrt-gradio.service fluxrt-cloudflared.service | sed -n '1,40p'
 
 echo
 echo "To check later:"
