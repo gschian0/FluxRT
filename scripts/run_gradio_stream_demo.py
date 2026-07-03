@@ -15,6 +15,9 @@ import gradio as gr
 from fluxrt import StreamProcessor
 from fluxrt.utils import crop_maximal_rectangle
 
+# Must match fanout FPS (start_rtmp_fanout.sh) to avoid massive frame drops on Twitch.
+BROADCAST_FPS = float(os.environ.get("BROADCAST_FPS", "8"))
+
 default_prompt = "8k ultra high resolution claymation character video frame, expressive handmade alien hosts, visible fingerprints in clay, miniature broadcast studio, saturated practical lights, crisp macro lens detail, cinematic depth of field"
 default_stream_url = "https://streamer1.connectto.com/AABC_WEB_1201/index.m3u8"
 default_music_radio_url = "http://stream.zeno.fm/0a4yq1u0f0hvv"
@@ -416,7 +419,7 @@ def _is_processed_frame_valid(frame: np.ndarray | None) -> bool:
 
 
 def _target_buffer_frames(fps: float) -> int:
-    fps_val = max(1.0, float(fps or 25.0))
+    fps_val = max(1.0, float(fps or BROADCAST_FPS))
     return max(8, int(round(fps_val * lead_buffer_seconds)))
 
 
@@ -517,12 +520,14 @@ def _push_processed_for_broadcast(processed_frame: np.ndarray | None, fps: float
     _enqueue_broadcast_frame(frame_to_send, fps=float(fps))
 
 
-def _get_udp_writer(width, height, fps=25):
+def _get_udp_writer(width, height, fps=None):
     global udp_writer, udp_writer_dims
+    if fps is None:
+        fps = BROADCAST_FPS
     # Keep keyframes frequent so downstream decoders recover quickly from UDP loss.
     gop = max(8, int(float(fps) * 2))
     with udp_writer_lock:
-        if udp_writer is not None and udp_writer_dims != (width, height):
+        if udp_writer is not None and udp_writer_dims != (width, height, float(fps)):
             try:
                 udp_writer.terminate()
                 udp_writer.wait(timeout=2)
@@ -560,23 +565,27 @@ def _get_udp_writer(width, height, fps=25):
                 '-muxpreload', '0',
                 '-flush_packets', '1',
                 '-f', 'mpegts',
-                'udp://127.0.0.1:5000?pkt_size=1316'
+                'udp://127.0.0.1:5000?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1'
             ]
             udp_writer = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-            udp_writer_dims = (width, height)
+            udp_writer_dims = (width, height, float(fps))
         return udp_writer
 
 
-def _write_to_udp(frame, fps=25):
+def _write_to_udp(frame, fps=None):
+    global udp_writer
     if frame is None:
         return
+    if fps is None:
+        fps = BROADCAST_FPS
     h, w = frame.shape[:2]
     writer = _get_udp_writer(w, h, fps)
     if writer and writer.stdin:
         try:
             writer.stdin.write(frame.tobytes())
         except Exception:
-            pass
+            with udp_writer_lock:
+                udp_writer = None
 
 
 def _is_zero_frame(frame: np.ndarray | None) -> bool:
@@ -2060,7 +2069,7 @@ def _stream_loop(stream_url: str, video_id: int):
     capture_url = _start_stream_relay_if_needed(stream_url)
     cap = _open_stream_capture(capture_url)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    frame_time = 1.0 / 25
+    frame_time = 1.0 / BROADCAST_FPS
     consecutive_failures = 0
     last_reopen_at = 0.0
     switched_to_fallback = False
@@ -2076,7 +2085,7 @@ def _stream_loop(stream_url: str, video_id: int):
                 set_status("stream reconnecting")
                 consecutive_failures += 1
                 keepalive_rgb = _placeholder_rgb("Stream source unavailable")
-                _enqueue_broadcast_frame(to_bgr(keepalive_rgb), fps=8.0)
+                _enqueue_broadcast_frame(to_bgr(keepalive_rgb), fps=BROADCAST_FPS)
                 if (
                     consecutive_failures >= 120
                     and not switched_to_fallback
@@ -2105,7 +2114,7 @@ def _stream_loop(stream_url: str, video_id: int):
                 # Keep broadcast output alive while upstream reconnects so
                 # fanout does not drop the RTMP session.
                 keepalive_rgb = _placeholder_rgb("Stream reconnecting")
-                _enqueue_broadcast_frame(to_bgr(keepalive_rgb), fps=8.0)
+                _enqueue_broadcast_frame(to_bgr(keepalive_rgb), fps=BROADCAST_FPS)
                 if (
                     consecutive_failures >= 120
                     and not switched_to_fallback
@@ -2142,7 +2151,7 @@ def _stream_loop(stream_url: str, video_id: int):
                 current_processed_frame = to_rgb(processed)
 
             candidate = processed if filter_active else None
-            _push_processed_for_broadcast(candidate, fps=25.0)
+            _push_processed_for_broadcast(candidate, fps=BROADCAST_FPS)
 
             time.sleep(max(0, frame_time - (time.time() - start)))
     finally:
@@ -2246,7 +2255,7 @@ def process_webcam(frame):
     try:
         _, processed, filter_active = render_frame(to_bgr(frame))
         candidate = processed if filter_active else None
-        _push_processed_for_broadcast(candidate, fps=25.0)
+        _push_processed_for_broadcast(candidate, fps=BROADCAST_FPS)
         return to_rgb(processed)
     except Exception as exc:
         set_status(f"webcam processing error: {exc}")
@@ -2906,6 +2915,18 @@ def main():
         set_status("local live")
     else:
         set_status("idle")
+
+    # Auto-start IPTV stream on RunPod so video pipeline begins without manual UI clicks.
+    if os.getenv("AUTO_START_STREAM", "0") == "1":
+        auto_url = os.getenv("STREAM_URL", default_stream_url).strip()
+        auto_delay = float(os.getenv("AUTO_START_DELAY", "90"))
+
+        def _auto_start_stream():
+            time.sleep(auto_delay)
+            start_stream_video(auto_url)
+            set_status(f"auto stream started: {auto_url[:80]}")
+
+        threading.Thread(target=_auto_start_stream, daemon=True).start()
 
     # Queue can stall live webcam callbacks over some tunnels; keep it
     # optional and off by default for responsive webcam processing.

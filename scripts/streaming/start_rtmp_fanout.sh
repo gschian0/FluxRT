@@ -105,10 +105,8 @@ if [[ "${#TARGETS[@]}" -eq 0 ]]; then
 fi
 
 TEE_OUTPUT="$(IFS='|'; echo "${TARGETS[*]}")"
-# Video input is a UDP MPEG-TS reader; adding fifo_size/overrun_nonfatal here
-# makes ffmpeg try to bind the port itself, colliding with the Gradio writer.
-# Keep the URL bare so it acts as a pure multicast reader.
-INPUT_URL="${INPUT_URL%%\?*}?pkt_size=1316"
+# Large receive buffer prevents drops when fanout re-encodes slower than inference.
+INPUT_URL="$(ensure_udp_buffer_params "${INPUT_URL%%\?*}?pkt_size=1316")"
 
 AUDIO_INPUT_URL_BUFFERED="$(ensure_udp_buffer_params "$AUDIO_INPUT_URL")"
 TTS_INPUT_URL_BUFFERED="$(ensure_udp_buffer_params "$TTS_INPUT_URL")"
