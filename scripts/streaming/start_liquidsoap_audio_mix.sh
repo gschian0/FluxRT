@@ -38,9 +38,25 @@ fi
 
 scripts/streaming/stop_audio_mix_bus.sh >/dev/null 2>&1 || true
 
+RUN_LIQ="/tmp/fluxrt-audio-mix-run.liq"
+sed \
+  -e "s|@MUSIC_VOL@|${MUSIC_MIX_VOLUME}|g" \
+  -e "s|@TTS_VOL@|${TTS_MIX_VOLUME}|g" \
+  -e "s|@AUDIO_BITRATE@|${AUDIO_BITRATE}|g" \
+  -e "s|@MIX_OUTPUT_URL@|${MIX_OUTPUT_URL}|g" \
+  -e "s|@MUSIC_INPUT_URL@|${MUSIC_INPUT_URL}|g" \
+  -e "s|@TTS_INPUT_URL@|${TTS_INPUT_URL}|g" \
+  "$LIQ_SCRIPT" > "$RUN_LIQ"
+
+if ! liquidsoap --check "$RUN_LIQ" >/dev/null 2>&1; then
+  echo "Liquidsoap script check failed for $RUN_LIQ"
+  liquidsoap --check "$RUN_LIQ" || true
+  exit 1
+fi
+
 export MUSIC_MIX_VOLUME TTS_MIX_VOLUME AUDIO_BITRATE MIX_OUTPUT_URL MUSIC_INPUT_URL TTS_INPUT_URL
 
-nohup liquidsoap "$LIQ_SCRIPT" > "$MIX_LOG" 2>&1 &
+nohup liquidsoap "$RUN_LIQ" > "$MIX_LOG" 2>&1 &
 echo "$!" > "$MIX_PID"
 
 sleep 1
