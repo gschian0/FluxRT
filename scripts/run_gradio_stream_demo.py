@@ -178,6 +178,26 @@ def _is_process_running(pattern: str) -> bool:
         return False
 
 
+def _pid_file_is_running(pid_file: str) -> bool:
+    try:
+        if not os.path.isfile(pid_file):
+            return False
+        raw = open(pid_file, "r", encoding="utf-8", errors="ignore").read().strip()
+        if not raw.isdigit():
+            return False
+        return _pid_is_running(int(raw))
+    except Exception:
+        return False
+
+
+def _is_mediamtx_fanout_running() -> bool:
+    if _pid_file_is_running("/tmp/fluxrt-mediamtx-ingest.pid"):
+        return True
+    if _pid_file_is_running("/tmp/fluxrt-mediamtx.pid"):
+        return True
+    return _is_process_running("ffmpeg.*rtmp://127.0.0.1:1935/fluxrt")
+
+
 def _is_music_stream_running() -> bool:
     return _is_process_running("run_musicgen_radio_plus_musicGEN.py")
 
@@ -330,8 +350,10 @@ def _reset_broadcast_gate(reason: str | None = None):
 
 def _broadcast_sender_loop():
     last_frame = None
-    last_fps = 8
+    last_fps = int(max(1, BROADCAST_FPS))
     next_send_ts = 0.0
+    repeat_count = 0
+    repeat_log_interval = max(40, int(BROADCAST_FPS * 5))
     while True:
         payload = None
         with broadcast_send_queue_lock:
@@ -342,6 +364,12 @@ def _broadcast_sender_loop():
         if payload is None:
             if last_frame is not None and now >= next_send_ts:
                 _write_to_udp(last_frame, fps=int(max(1, last_fps)))
+                repeat_count += 1
+                if repeat_count == 1 or repeat_count % repeat_log_interval == 0:
+                    print(
+                        f"[broadcast] repeating last frame (count={repeat_count}, fps={last_fps})",
+                        flush=True,
+                    )
                 next_send_ts = now + (1.0 / float(max(1, last_fps)))
                 continue
             time.sleep(0.002)
@@ -349,7 +377,8 @@ def _broadcast_sender_loop():
 
         frame_to_send, fps = payload
         last_frame = frame_to_send
-        last_fps = int(max(1, fps))
+        last_fps = int(max(1, fps or BROADCAST_FPS))
+        repeat_count = 0
         _write_to_udp(frame_to_send, fps=last_fps)
         next_send_ts = now + (1.0 / float(max(1, last_fps)))
 
@@ -1317,6 +1346,20 @@ def start_fanout_with_music(
         set_status("fanout start skipped: no platform enabled")
         return "fanout start skipped: enable at least one platform"
 
+    if os.environ.get("AUTO_START_FANOUT", "0") == "1":
+        if _is_mediamtx_fanout_running():
+            msg = "fanout already running (AUTO_START_FANOUT=1 — tmux owns fanout start)"
+            set_status(msg)
+            return msg
+        msg = "fanout start skipped: AUTO_START_FANOUT=1 (tmux auto-starts fanout; do not click Start Fanout)"
+        set_status(msg)
+        return msg
+
+    if _is_mediamtx_fanout_running():
+        msg = "fanout already running (MediaMTX ingest active — not starting a second copy)"
+        set_status(msg)
+        return msg
+
     if not _can_start_fanout_now():
         msg = (
             "fanout start blocked: waiting for AI-filtered processed frames "
@@ -1393,8 +1436,9 @@ def start_fanout_with_music(
         "scripts/streaming/stop_rtmp_fanout.sh || true; "
         f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} "
         f"ENABLE_TTS_OVERLAY={enable_quote_voice_str} AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url "
-        # Video UDP must stay bare (pkt_size only) — fifo_size makes ffmpeg bind port 5000 and collides with Gradio writer.
+        # Video UDP writer stays bare (pkt_size only); ingest reader adds fifo/rw_timeout.
         "VIDEO_INPUT_URL='udp://127.0.0.1:5000?pkt_size=1316' "
+        "VIDEO_SOURCE_MODE=wait VIDEO_WAIT_TIMEOUT=120 "
         "AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1' "
         "TTS_INPUT_URL='udp://127.0.0.1:5004?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1' "
         f"MUSIC_MIX_VOLUME={float(music_mix_volume)} TTS_MIX_VOLUME={float(tts_mix_volume)} "

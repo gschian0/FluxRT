@@ -13,29 +13,36 @@ MEDIAMTX_PID="${MEDIAMTX_PID:-/tmp/fluxrt-mediamtx.pid}"
 
 INGEST_LOG="${INGEST_LOG:-/tmp/fluxrt-mediamtx-ingest.log}"
 INGEST_PID="${INGEST_PID:-/tmp/fluxrt-mediamtx-ingest.pid}"
+INGEST_PROGRESS="${INGEST_PROGRESS:-/tmp/fluxrt-mediamtx-ingest.progress}"
 EGRESS_LOG="${EGRESS_LOG:-/tmp/fluxrt-mediamtx-egress.log}"
 EGRESS_PID="${EGRESS_PID:-/tmp/fluxrt-mediamtx-egress.pid}"
+EGRESS_PROGRESS="${EGRESS_PROGRESS:-/tmp/fluxrt-mediamtx-egress.progress}"
 
-VIDEO_INPUT_URL="${VIDEO_INPUT_URL:-udp://127.0.0.1:5000?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1}"
+VIDEO_INPUT_URL="${VIDEO_INPUT_URL:-udp://127.0.0.1:5000?pkt_size=1316}"
 AUDIO_INPUT_URL="${AUDIO_INPUT_URL:-udp://127.0.0.1:5002?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1}"
 TTS_INPUT_URL="${TTS_INPUT_URL:-udp://127.0.0.1:5004?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1}"
 
+UDP_READER_FIFO_SIZE="${UDP_READER_FIFO_SIZE:-1000000}"
+UDP_RW_TIMEOUT_US="${UDP_RW_TIMEOUT_US:-5000000}"
+UDP_DRAIN_SECS="${UDP_DRAIN_SECS:-2}"
+
 ENABLE_TTS_OVERLAY="${ENABLE_TTS_OVERLAY:-1}"
-OUTPUT_WIDTH="${OUTPUT_WIDTH:-426}"
-OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-240}"
-FPS="${FPS:-12}"
-VIDEO_BITRATE="${VIDEO_BITRATE:-1200k}"
-VIDEO_MAXRATE="${VIDEO_MAXRATE:-1200k}"
-VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-2400k}"
-AUDIO_BITRATE="${AUDIO_BITRATE:-96k}"
-VIDEO_TRANSCODE_MODE="${VIDEO_TRANSCODE_MODE:-copy}"
-MUSIC_MIX_VOLUME="${MUSIC_MIX_VOLUME:-0.65}"
-TTS_MIX_VOLUME="${TTS_MIX_VOLUME:-1.80}"
+OUTPUT_WIDTH="${OUTPUT_WIDTH:-288}"
+OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-160}"
+FPS="${FPS:-8}"
+VIDEO_BITRATE="${VIDEO_BITRATE:-550k}"
+VIDEO_MAXRATE="${VIDEO_MAXRATE:-550k}"
+VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-1100k}"
+AUDIO_BITRATE="${AUDIO_BITRATE:-128k}"
+VIDEO_TRANSCODE_MODE="${VIDEO_TRANSCODE_MODE:-transcode}"
+MUSIC_MIX_VOLUME="${MUSIC_MIX_VOLUME:-0.85}"
+TTS_MIX_VOLUME="${TTS_MIX_VOLUME:-1.55}"
 MUSIC_WAIT_TIMEOUT="${MUSIC_WAIT_TIMEOUT:-30}"
 TTS_WAIT_TIMEOUT="${TTS_WAIT_TIMEOUT:-40}"
-VIDEO_SOURCE_MODE="${VIDEO_SOURCE_MODE:-url}"
-VIDEO_WAIT_TIMEOUT="${VIDEO_WAIT_TIMEOUT:-6}"
+VIDEO_SOURCE_MODE="${VIDEO_SOURCE_MODE:-wait}"
+VIDEO_WAIT_TIMEOUT="${VIDEO_WAIT_TIMEOUT:-120}"
 VIDEO_FALLBACK_ON_MISS="${VIDEO_FALLBACK_ON_MISS:-1}"
+RTMP_PUBLISHER_WAIT_TIMEOUT="${RTMP_PUBLISHER_WAIT_TIMEOUT:-60}"
 
 ENABLE_YOUTUBE="${ENABLE_YOUTUBE:-0}"
 ENABLE_TWITCH="${ENABLE_TWITCH:-1}"
@@ -69,6 +76,7 @@ if [[ -z "$TARGET_URL" ]]; then
 fi
 
 scripts/streaming/stop_mediamtx_fanout.sh >/dev/null 2>&1 || true
+rm -f "$INGEST_PROGRESS" "$EGRESS_PROGRESS"
 
 if [[ ! -x "$MEDIAMTX_BIN" ]]; then
   echo "MediaMTX binary not found; installing locally..."
@@ -135,6 +143,18 @@ ensure_udp_buffer_params() {
   echo "${url}${sep}fifo_size=50000000&overrun_nonfatal=1"
 }
 
+ensure_udp_reader_params() {
+  local url="$1"
+  local fifo="${UDP_READER_FIFO_SIZE}"
+  if [[ "$url" != udp://* ]]; then
+    echo "$url"
+    return
+  fi
+  local base="${url%%\?*}"
+  local sep='?'
+  echo "${base}${sep}pkt_size=1316&fifo_size=${fifo}&overrun_nonfatal=1"
+}
+
 udp_audio_is_ready() {
   local url="$1"
   timeout 2 ffprobe -v error -analyzeduration 1M -probesize 1M \
@@ -177,18 +197,34 @@ wait_udp_video_ready() {
   return 1
 }
 
+rtmp_publisher_is_ready() {
+  timeout 3 ffprobe -v error -analyzeduration 1M -probesize 1M \
+    -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 \
+    "rtmp://127.0.0.1:1935/fluxrt" >/dev/null 2>&1
+}
+
+wait_rtmp_publisher_ready() {
+  local wait_secs="$1"
+  local i=0
+  while [[ "$i" -lt "$wait_secs" ]]; do
+    if rtmp_publisher_is_ready; then
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 INGEST_LOOP="/tmp/fluxrt-mediamtx-ingest-loop.sh"
 EGRESS_LOOP="/tmp/fluxrt-mediamtx-egress-loop.sh"
 
+VIDEO_READER_URL="$(ensure_udp_reader_params "$VIDEO_INPUT_URL")"
 AUDIO_INPUT_URL="$(ensure_udp_buffer_params "$AUDIO_INPUT_URL")"
 TTS_INPUT_URL="$(ensure_udp_buffer_params "$TTS_INPUT_URL")"
 
 AUDIO_SOURCE_MODE="${AUDIO_SOURCE_MODE:-url}"
-TTS_SOURCE_MODE="${TTS_SOURCE_MODE:-silence}"
-
-# Keep broadcast audio always open: base silence is always present, while
-# music / TTS legs are added when available and otherwise replaced by silence.
-BASE_AUDIO_INPUT="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
+TTS_SOURCE_MODE="${TTS_SOURCE_MODE:-url}"
 
 if [[ "$AUDIO_SOURCE_MODE" == "url" ]]; then
   if wait_udp_audio_ready "$AUDIO_INPUT_URL" "$MUSIC_WAIT_TIMEOUT"; then
@@ -214,46 +250,115 @@ else
   TTS_VOL_EFFECTIVE="0.0"
 fi
 
+BASE_AUDIO_INPUT="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
 FILTER_COMPLEX="[1:a]volume=1.0[base];[2:a]volume=${MUSIC_MIX_VOLUME}[music];[3:a]volume=${TTS_VOL_EFFECTIVE}[tts];[base][music][tts]amix=inputs=3:duration=longest:dropout_transition=0:normalize=0,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]"
 
 if [[ "$VIDEO_TRANSCODE_MODE" == "copy" ]]; then
   VIDEO_ENCODE_ARGS='-c:v copy'
-  VIDEO_FILTER_ARGS=''
-  VIDEO_FPS_ARGS=''
 else
   VIDEO_ENCODE_ARGS="-vf scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT} -r ${FPS} -fps_mode cfr -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g $((FPS * 2)) -keyint_min $((FPS * 2)) -sc_threshold 0 -x264-params nal-hrd=cbr:force-cfr=1 -b:v ${VIDEO_BITRATE} -minrate ${VIDEO_BITRATE} -maxrate ${VIDEO_MAXRATE} -bufsize ${VIDEO_BUFSIZE}"
-  VIDEO_FILTER_ARGS=''
-  VIDEO_FPS_ARGS=''
 fi
 
-if [[ "$VIDEO_SOURCE_MODE" == "synthetic" ]]; then
-  VIDEO_INPUT_ARG="-f lavfi -re -i color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
-elif wait_udp_video_ready "$VIDEO_INPUT_URL" "$VIDEO_WAIT_TIMEOUT"; then
-  VIDEO_INPUT_ARG="-thread_queue_size 16384 -i \"${VIDEO_INPUT_URL}\""
-elif [[ "$VIDEO_FALLBACK_ON_MISS" == "1" ]]; then
-  echo "[fanout] video input unavailable at startup, using synthetic fallback"
-  VIDEO_INPUT_ARG="-f lavfi -re -i color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
-else
-  VIDEO_INPUT_ARG="-thread_queue_size 16384 -i \"${VIDEO_INPUT_URL}\""
-fi
+SYNTHETIC_VIDEO_INPUT="-f lavfi -i color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
 
 cat > "$INGEST_LOOP" <<EOF
 #!/usr/bin/env bash
 set -u
+
+VIDEO_READER_URL="${VIDEO_READER_URL}"
+VIDEO_SOURCE_MODE="${VIDEO_SOURCE_MODE}"
+VIDEO_WAIT_TIMEOUT="${VIDEO_WAIT_TIMEOUT}"
+VIDEO_FALLBACK_ON_MISS="${VIDEO_FALLBACK_ON_MISS}"
+UDP_RW_TIMEOUT_US="${UDP_RW_TIMEOUT_US}"
+UDP_DRAIN_SECS="${UDP_DRAIN_SECS}"
+INGEST_PROGRESS="${INGEST_PROGRESS}"
+SYNTHETIC_VIDEO_INPUT="${SYNTHETIC_VIDEO_INPUT}"
+BASE_AUDIO_INPUT="${BASE_AUDIO_INPUT}"
+AUDIO1_INPUT="${AUDIO1_INPUT}"
+AUDIO2_INPUT="${AUDIO2_INPUT}"
+FILTER_COMPLEX="${FILTER_COMPLEX}"
+VIDEO_ENCODE_ARGS="${VIDEO_ENCODE_ARGS}"
+AUDIO_BITRATE="${AUDIO_BITRATE}"
+
+udp_video_is_ready() {
+  local url="\$1"
+  timeout 2 ffprobe -v error -analyzeduration 1M -probesize 1M \\
+    -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 \\
+    "\$url" >/dev/null 2>&1
+}
+
+wait_udp_video_ready() {
+  local url="\$1"
+  local wait_secs="\$2"
+  local i=0
+  while [[ "\$i" -lt "\$wait_secs" ]]; do
+    if udp_video_is_ready "\$url"; then
+      return 0
+    fi
+    sleep 1
+    i=\$((i + 1))
+  done
+  return 1
+}
+
+drain_udp_video() {
+  echo "[ingest] \$(date -Is) draining stale UDP video buffer"
+  timeout "\${UDP_DRAIN_SECS}" ffmpeg -hide_banner -loglevel error \\
+    -rw_timeout 500000 \\
+    -i "\${VIDEO_READER_URL}" \\
+    -c copy -f null - 2>/dev/null || true
+}
+
+resolve_video_input() {
+  if [[ "\${VIDEO_SOURCE_MODE}" == "synthetic" ]]; then
+    echo "\${SYNTHETIC_VIDEO_INPUT}"
+    return
+  fi
+  if [[ "\${VIDEO_SOURCE_MODE}" == "wait" ]]; then
+    if wait_udp_video_ready "\${VIDEO_READER_URL}" "\${VIDEO_WAIT_TIMEOUT}"; then
+      echo "-rw_timeout \${UDP_RW_TIMEOUT_US} -thread_queue_size 16384 -i \"\${VIDEO_READER_URL}\""
+      return
+    fi
+    if [[ "\${VIDEO_FALLBACK_ON_MISS}" == "1" ]]; then
+      echo "[ingest] \$(date -Is) video wait timeout, synthetic fallback" >&2
+      echo "\${SYNTHETIC_VIDEO_INPUT}"
+      return
+    fi
+    echo "[ingest] \$(date -Is) video wait timeout, attaching anyway" >&2
+    echo "-rw_timeout \${UDP_RW_TIMEOUT_US} -thread_queue_size 16384 -i \"\${VIDEO_READER_URL}\""
+    return
+  fi
+  if udp_video_is_ready "\${VIDEO_READER_URL}"; then
+    echo "-rw_timeout \${UDP_RW_TIMEOUT_US} -thread_queue_size 16384 -i \"\${VIDEO_READER_URL}\""
+  elif [[ "\${VIDEO_FALLBACK_ON_MISS}" == "1" ]]; then
+    echo "[ingest] \$(date -Is) video not ready, synthetic fallback" >&2
+    echo "\${SYNTHETIC_VIDEO_INPUT}"
+  else
+    echo "-rw_timeout \${UDP_RW_TIMEOUT_US} -thread_queue_size 16384 -i \"\${VIDEO_READER_URL}\""
+  fi
+}
+
 while true; do
-  ffmpeg -hide_banner -loglevel info \
-    -fflags +genpts+discardcorrupt+igndts \
-    -analyzeduration 2M -probesize 2M \
-    ${VIDEO_INPUT_ARG} \
-    ${BASE_AUDIO_INPUT} \
-    ${AUDIO1_INPUT} \
-    ${AUDIO2_INPUT} \
-    -map 0:v:0 -map "[aout]" \
-    -filter_complex "${FILTER_COMPLEX}" \
-    ${VIDEO_ENCODE_ARGS} \
-    -c:a aac -b:a "${AUDIO_BITRATE}" -ar 48000 -ac 2 \
-    -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
+  drain_udp_video
+  VIDEO_INPUT_ARG="\$(resolve_video_input)"
+  rm -f "\${INGEST_PROGRESS}"
+  echo "[ingest] \$(date -Is) ffmpeg starting"
+  ffmpeg -hide_banner -loglevel info \\
+    -fflags +genpts+discardcorrupt+igndts \\
+    -analyzeduration 2M -probesize 2M \\
+    -err_detect ignore_err \\
+    \${VIDEO_INPUT_ARG} \\
+    \${BASE_AUDIO_INPUT} \\
+    \${AUDIO1_INPUT} \\
+    \${AUDIO2_INPUT} \\
+    -map 0:v:0 -map "[aout]" \\
+    -filter_complex "\${FILTER_COMPLEX}" \\
+    \${VIDEO_ENCODE_ARGS} \\
+    -c:a aac -b:a "\${AUDIO_BITRATE}" -ar 48000 -ac 2 \\
+    -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \\
+    -progress "\${INGEST_PROGRESS}" -nostats \\
     -f flv "rtmp://127.0.0.1:1935/fluxrt" || true
+  echo "[ingest] \$(date -Is) ffmpeg exited, reconnecting in 1s"
   sleep 1
 done
 EOF
@@ -262,11 +367,45 @@ chmod +x "$INGEST_LOOP"
 cat > "$EGRESS_LOOP" <<EOF
 #!/usr/bin/env bash
 set -u
+
+EGRESS_PROGRESS="${EGRESS_PROGRESS}"
+RTMP_PUBLISHER_WAIT_TIMEOUT="${RTMP_PUBLISHER_WAIT_TIMEOUT}"
+TARGET_URL="${TARGET_URL}"
+
+rtmp_publisher_is_ready() {
+  timeout 3 ffprobe -v error -analyzeduration 1M -probesize 1M \\
+    -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 \\
+    "rtmp://127.0.0.1:1935/fluxrt" >/dev/null 2>&1
+}
+
+wait_rtmp_publisher_ready() {
+  local wait_secs="\$1"
+  local i=0
+  while [[ "\$i" -lt "\$wait_secs" ]]; do
+    if rtmp_publisher_is_ready; then
+      return 0
+    fi
+    sleep 1
+    i=\$((i + 1))
+  done
+  return 1
+}
+
 while true; do
-  ffmpeg -hide_banner -loglevel info \
-    -fflags +genpts+discardcorrupt+igndts \
-    -i "rtmp://127.0.0.1:1935/fluxrt" \
-    -c copy -f flv "${TARGET_URL}" || true
+  if ! wait_rtmp_publisher_ready "\${RTMP_PUBLISHER_WAIT_TIMEOUT}"; then
+    echo "[egress] \$(date -Is) no RTMP publisher after \${RTMP_PUBLISHER_WAIT_TIMEOUT}s, retrying"
+    sleep 2
+    continue
+  fi
+  rm -f "\${EGRESS_PROGRESS}"
+  echo "[egress] \$(date -Is) ffmpeg starting"
+  ffmpeg -hide_banner -loglevel info \\
+    -fflags +genpts+discardcorrupt+igndts \\
+    -i "rtmp://127.0.0.1:1935/fluxrt" \\
+    -c copy \\
+    -progress "\${EGRESS_PROGRESS}" -nostats \\
+    -f flv "\${TARGET_URL}" || true
+  echo "[egress] \$(date -Is) ffmpeg exited, reconnecting in 2s"
   sleep 2
 done
 EOF
@@ -283,6 +422,9 @@ echo "Target: $TARGET_NAME"
 echo "MediaMTX PID: $(cat "$MEDIAMTX_PID")"
 echo "Ingest PID: $(cat "$INGEST_PID")"
 echo "Egress PID: $(cat "$EGRESS_PID")"
+echo "Progress:"
+echo "  $INGEST_PROGRESS"
+echo "  $EGRESS_PROGRESS"
 echo "Logs:"
 echo "  $MEDIAMTX_LOG"
 echo "  $INGEST_LOG"
