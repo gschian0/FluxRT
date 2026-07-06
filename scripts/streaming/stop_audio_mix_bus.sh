@@ -14,6 +14,9 @@ if [[ -f "$MIX_PID" ]]; then
 fi
 
 pkill -f '/tmp/fluxrt-audio-mix-loop.sh' 2>/dev/null || true
-pkill -f 'ffmpeg.*udp://127.0.0.1:5006' 2>/dev/null || true
+# Only kill mix-bus encoders (anullsrc + mpegts output). Do NOT match fanout (-i udp://...5006).
+pkill -f 'ffmpeg.*anullsrc.*-f mpegts udp://127.0.0.1:5006' 2>/dev/null || true
+sleep 0.5
+pkill -9 -f 'ffmpeg.*anullsrc.*-f mpegts udp://127.0.0.1:5006' 2>/dev/null || true
 
 echo "Stopped audio mix bus (if running)."

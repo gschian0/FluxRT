@@ -3,6 +3,7 @@ from collections import deque
 import os
 import random
 import re
+import select
 import signal
 import subprocess
 import threading
@@ -15,10 +16,10 @@ import gradio as gr
 from fluxrt import StreamProcessor
 from fluxrt.utils import crop_maximal_rectangle
 
-# Must match fanout FPS (start_rtmp_fanout.sh) to avoid massive frame drops on Twitch.
+# Must match fanout FPS (start_mediamtx_fanout.sh) to avoid massive frame drops on Twitch.
 BROADCAST_FPS = float(os.environ.get("BROADCAST_FPS", "8"))
 
-default_prompt = "8k ultra high resolution claymation character video frame, expressive handmade alien hosts, visible fingerprints in clay, miniature broadcast studio, saturated practical lights, crisp macro lens detail, cinematic depth of field"
+default_prompt = "claymation, 3d render, shiny textures, high resolution, hyper reallistic"
 default_stream_url = "https://streamer1.connectto.com/AABC_WEB_1201/index.m3u8"
 default_music_radio_url = "http://stream.zeno.fm/0a4yq1u0f0hvv"
 default_music_station_name = "Reggae King Radio"
@@ -582,6 +583,12 @@ def _write_to_udp(frame, fps=None):
     writer = _get_udp_writer(w, h, fps)
     if writer and writer.stdin:
         try:
+            fd = writer.stdin.fileno()
+            _, writable, _ = select.select([], [fd], [], 0)
+            if not writable:
+                # Never block the broadcast loop — drop on backpressure so UDP 5000
+                # keeps receiving fresh frames at BROADCAST_FPS for fanout.
+                return
             writer.stdin.write(frame.tobytes())
         except Exception:
             with udp_writer_lock:
@@ -1360,13 +1367,13 @@ def start_fanout_with_music(
     enable_twitch_str = "1" if enable_twitch else "0"
     enable_facebook_str = "1" if enable_facebook else "0"
     selected_audio_bitrate = (fanout_audio_bitrate or "96k").strip()
-    enable_monitor_str = "1" if enable_local_monitor else "0"
 
     if enable_local_monitor:
         monitor_msg = start_stream_monitor_http_ui()
         if "failed" in monitor_msg.lower():
             return f"fanout start blocked: local monitor requested but failed to start ({monitor_msg})"
 
+    # MediaMTX fanout mixes music (5002) + TTS (5004) inline — audio bus not used by ingest.
     if use_audio_bus:
         bus_msg = start_audio_mix_bus_ui(
             music_mix_volume=music_mix_volume,
@@ -1378,21 +1385,25 @@ def start_fanout_with_music(
         if "failed" in bus_msg.lower():
             return f"fanout start blocked: audio bus requested but failed to start ({bus_msg})"
 
-    enable_quote_voice_str = "0" if use_audio_bus else ("1" if enable_quote_voice else "0")
-    audio_input_url = "udp://127.0.0.1:5006?pkt_size=1316" if use_audio_bus else "udp://127.0.0.1:5002?pkt_size=1316"
+    enable_quote_voice_str = "1" if enable_quote_voice else "0"
 
     launch_cmd = (
         "cd /workspace/FluxRT && "
         "scripts/streaming/stop_mediamtx_fanout.sh || true; "
         "scripts/streaming/stop_rtmp_fanout.sh || true; "
-        f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} ENABLE_LOCAL_MONITOR={enable_monitor_str} ENABLE_TTS_OVERLAY={enable_quote_voice_str} AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url "
-        "INPUT_URL='udp://127.0.0.1:5000?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1' "
-        f"AUDIO_INPUT_URL='{audio_input_url}' "
+        f"ENABLE_YOUTUBE={enable_youtube_str} ENABLE_TWITCH={enable_twitch_str} ENABLE_FACEBOOK={enable_facebook_str} "
+        f"ENABLE_TTS_OVERLAY={enable_quote_voice_str} AUDIO_SOURCE_MODE=url TTS_SOURCE_MODE=url "
+        # Video UDP must stay bare (pkt_size only) — fifo_size makes ffmpeg bind port 5000 and collides with Gradio writer.
+        "VIDEO_INPUT_URL='udp://127.0.0.1:5000?pkt_size=1316' "
+        "AUDIO_INPUT_URL='udp://127.0.0.1:5002?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1' "
         "TTS_INPUT_URL='udp://127.0.0.1:5004?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1' "
         f"MUSIC_MIX_VOLUME={float(music_mix_volume)} TTS_MIX_VOLUME={float(tts_mix_volume)} "
-        "FPS=8 OUTPUT_WIDTH=288 OUTPUT_HEIGHT=160 VIDEO_BITRATE=550k VIDEO_MAXRATE=550k VIDEO_BUFSIZE=1100k "
+        f"FPS={os.environ.get('FANOUT_FPS', os.environ.get('BROADCAST_FPS', '8'))} "
+        "OUTPUT_WIDTH=288 OUTPUT_HEIGHT=160 VIDEO_TRANSCODE_MODE=transcode "
+        "VIDEO_BITRATE=550k VIDEO_MAXRATE=550k VIDEO_BUFSIZE=1100k "
         f"AUDIO_BITRATE={selected_audio_bitrate} "
-        "scripts/streaming/start_rtmp_fanout.sh"
+        "MUSIC_WAIT_TIMEOUT=30 TTS_WAIT_TIMEOUT=40 "
+        "scripts/streaming/start_mediamtx_fanout.sh scripts/streaming/rtmp_targets.env"
     )
     try:
         result = subprocess.run(["bash", "-lc", launch_cmd], capture_output=True, text=True)
@@ -1407,14 +1418,12 @@ def start_fanout_with_music(
         return f"fanout launch failed: {msg}"
 
     launch_msg = (result.stdout or "fanout launch started").strip()
-    set_status("fanout started (direct RTMP loop)")
+    set_status("fanout started (MediaMTX hub)")
     if enable_local_monitor:
         launch_msg += f"\nLocal monitor: {stream_monitor_url()}"
     if use_audio_bus:
-        if enable_sfx_input:
-            return launch_msg + " (direct fanout + audio bus on udp 5006 + sfx udp 5008)"
-        return launch_msg + " (direct fanout + audio bus on udp 5006)"
-    return launch_msg + (" (quote voice mix enabled)" if enable_quote_voice else "")
+        launch_msg += " (MediaMTX fanout + legacy audio bus on udp 5006 — bus not used by ingest)"
+    return launch_msg + (" (quote voice mix enabled)" if enable_quote_voice else " (MediaMTX ingest mixes 5002+5004)")
 
 
 def start_fanout_with_music_ui(
@@ -2616,8 +2625,8 @@ def main():
                             fanout_enable_facebook = gr.Checkbox(value=False, label="Facebook")
                             fanout_enable_quote_voice = gr.Checkbox(value=True, label="Quote Voice")
                             fanout_enable_sfx = gr.Checkbox(value=False, label="SFX")
-                            fanout_use_audio_bus = gr.Checkbox(value=True, label="Audio Bus")
-                            fanout_enable_monitor = gr.Checkbox(value=True, label="Local Monitor")
+                            fanout_use_audio_bus = gr.Checkbox(value=False, label="Audio Bus (legacy — MediaMTX mixes inline)")
+                            fanout_enable_monitor = gr.Checkbox(value=False, label="Local Monitor")
                         with gr.Row():
                             audio_bus_music_volume = gr.Slider(
                                 label="Bus Music Volume",

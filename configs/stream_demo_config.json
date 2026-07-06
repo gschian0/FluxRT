@@ -1,5 +1,5 @@
 {
-    "default_prompt": "low-resolution video game screenshot in the style of 3DMVMKR, illustration in the style of SHNILLST",
+    "default_prompt": "claymation, 3d render, shiny textures, high resolution, hyper reallistic",
     "default_steps": 1,
     "default_seed": 52,
     "models_path": "FLUX.2-klein-4B",

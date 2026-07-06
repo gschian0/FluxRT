@@ -105,8 +105,10 @@ if [[ "${#TARGETS[@]}" -eq 0 ]]; then
 fi
 
 TEE_OUTPUT="$(IFS='|'; echo "${TARGETS[*]}")"
-# Large receive buffer prevents drops when fanout re-encodes slower than inference.
-INPUT_URL="$(ensure_udp_buffer_params "${INPUT_URL%%\?*}?pkt_size=1316")"
+# Video input is a UDP MPEG-TS reader; adding fifo_size/overrun_nonfatal here
+# makes ffmpeg try to bind the port itself, colliding with the Gradio writer.
+# Keep the URL bare so it acts as a pure multicast reader.
+INPUT_URL="${INPUT_URL%%\?*}?pkt_size=1316"
 
 AUDIO_INPUT_URL_BUFFERED="$(ensure_udp_buffer_params "$AUDIO_INPUT_URL")"
 TTS_INPUT_URL_BUFFERED="$(ensure_udp_buffer_params "$TTS_INPUT_URL")"
@@ -265,9 +267,11 @@ _run_fanout_loop() {
     echo "[fanout] $(date -Is) starting ffmpeg..." >> "$LOG_FILE"
     if [[ "$ENABLE_TTS_OVERLAY" == "1" ]]; then
       ffmpeg -hide_banner -loglevel info \
+        -progress "${PROGRESS_FILE:-/tmp/fluxrt-fanout-progress.txt}" -nostats \
         -fflags +genpts+discardcorrupt+igndts \
         -err_detect ignore_err \
         -analyzeduration 2M -probesize 2M \
+        -timeout "${UDP_READ_TIMEOUT_US:-5000000}" \
         -thread_queue_size 16384 \
         -i "$INPUT_URL" \
         "${AUDIO_INPUT_ARGS[@]}" \
@@ -288,9 +292,11 @@ _run_fanout_loop() {
         >> "$LOG_FILE" 2>&1
     else
       ffmpeg -hide_banner -loglevel info \
+        -progress "${PROGRESS_FILE:-/tmp/fluxrt-fanout-progress.txt}" -nostats \
         -fflags +genpts+discardcorrupt+igndts \
         -err_detect ignore_err \
         -analyzeduration 2M -probesize 2M \
+        -timeout "${UDP_READ_TIMEOUT_US:-5000000}" \
         -thread_queue_size 16384 \
         -i "$INPUT_URL" \
         "${AUDIO_INPUT_ARGS[@]}" \
@@ -341,6 +347,8 @@ nohup bash -c "$(declare -f run_bars_segment); $(declare -f _run_fanout_loop); \
   ENABLE_RECONNECT_BARS='$ENABLE_RECONNECT_BARS'; \
   RECONNECT_BARS_SECONDS='$RECONNECT_BARS_SECONDS'; \
   RECONNECT_SLEEP_SECONDS='$RECONNECT_SLEEP_SECONDS'; \
+  UDP_READ_TIMEOUT_US='${UDP_READ_TIMEOUT_US:-5000000}'; \
+  PROGRESS_FILE='${PROGRESS_FILE:-/tmp/fluxrt-fanout-progress.txt}'; \
   TEE_OUTPUT='$TEE_OUTPUT'; \
   PID_FILE='$PID_FILE'; LOG_FILE='$LOG_FILE'; \
   _run_fanout_loop" >> "$LOG_FILE" 2>&1 &

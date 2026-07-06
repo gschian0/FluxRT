@@ -194,6 +194,12 @@ class UdpAudioWriter:
             "2",
             "-fflags",
             "+genpts",  # Generate pts for smoother streaming
+            "-mpegts_flags",
+            "resend_headers",
+            "-muxdelay",
+            "0",
+            "-muxpreload",
+            "0",
             "-f",
             "mpegts",
             self.udp_url,

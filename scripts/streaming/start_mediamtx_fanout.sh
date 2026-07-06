@@ -91,17 +91,29 @@ paths:
     source: publisher
 YAML
 
+rtmp_port_is_listening() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn | grep -qE '(:1935 |:1935$)'
+    return $?
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | grep -q ':1935'
+    return $?
+  fi
+  (echo > /dev/tcp/127.0.0.1/1935) >/dev/null 2>&1
+}
+
 nohup "$MEDIAMTX_BIN" "$MEDIAMTX_CFG" > "$MEDIAMTX_LOG" 2>&1 &
 echo "$!" > "$MEDIAMTX_PID"
 
 for _ in $(seq 1 50); do
-  if ss -ltn | grep -q ':1935 '; then
+  if rtmp_port_is_listening; then
     break
   fi
   sleep 0.1
 done
 
-if ! ss -ltn | grep -q ':1935 '; then
+if ! rtmp_port_is_listening; then
   echo "MediaMTX failed to bind port 1935. See $MEDIAMTX_LOG"
   exit 1
 fi
