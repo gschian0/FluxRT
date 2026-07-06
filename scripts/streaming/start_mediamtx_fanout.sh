@@ -145,14 +145,13 @@ ensure_udp_buffer_params() {
 
 ensure_udp_reader_params() {
   local url="$1"
-  local fifo="${UDP_READER_FIFO_SIZE}"
   if [[ "$url" != udp://* ]]; then
     echo "$url"
     return
   fi
+  # Reader must not add fifo_size — it can make ffmpeg bind UDP 5000 and collide with Gradio.
   local base="${url%%\?*}"
-  local sep='?'
-  echo "${base}${sep}pkt_size=1316&fifo_size=${fifo}&overrun_nonfatal=1"
+  echo "${base}?pkt_size=1316"
 }
 
 udp_audio_is_ready() {
@@ -228,7 +227,7 @@ TTS_SOURCE_MODE="${TTS_SOURCE_MODE:-url}"
 
 if [[ "$AUDIO_SOURCE_MODE" == "url" ]]; then
   if wait_udp_audio_ready "$AUDIO_INPUT_URL" "$MUSIC_WAIT_TIMEOUT"; then
-    AUDIO1_INPUT="-thread_queue_size 16384 -i \"${AUDIO_INPUT_URL}\""
+    AUDIO1_INPUT="-thread_queue_size 16384 -i ${AUDIO_INPUT_URL@Q}"
   else
     echo "[fanout] music input unavailable after ${MUSIC_WAIT_TIMEOUT}s, using silence fallback"
     AUDIO1_INPUT="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
@@ -239,7 +238,7 @@ fi
 
 if [[ "$ENABLE_TTS_OVERLAY" == "1" && "$TTS_SOURCE_MODE" == "url" ]]; then
   if wait_udp_audio_ready "$TTS_INPUT_URL" "$TTS_WAIT_TIMEOUT"; then
-    AUDIO2_INPUT="-thread_queue_size 16384 -i \"${TTS_INPUT_URL}\""
+    AUDIO2_INPUT="-thread_queue_size 16384 -i ${TTS_INPUT_URL@Q}"
   else
     echo "[fanout] tts input unavailable after ${TTS_WAIT_TIMEOUT}s, using silence fallback"
     AUDIO2_INPUT="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
@@ -261,6 +260,24 @@ fi
 
 SYNTHETIC_VIDEO_INPUT="-f lavfi -i color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
 
+if [[ "$AUDIO1_INPUT" == *"anullsrc"* ]]; then
+  AUDIO1_ARRAY_LITERAL='(-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000)'
+else
+  AUDIO1_ARRAY_LITERAL="(-thread_queue_size 16384 -i $(printf '%q' "$AUDIO_INPUT_URL"))"
+fi
+
+if [[ "$AUDIO2_INPUT" == *"anullsrc"* ]]; then
+  AUDIO2_ARRAY_LITERAL='(-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000)'
+else
+  AUDIO2_ARRAY_LITERAL="(-thread_queue_size 16384 -i $(printf '%q' "$TTS_INPUT_URL"))"
+fi
+
+if [[ "$VIDEO_TRANSCODE_MODE" == "copy" ]]; then
+  VIDEO_ENCODE_ARRAY_LITERAL='(-c:v copy)'
+else
+  VIDEO_ENCODE_ARRAY_LITERAL="(-vf scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT} -r ${FPS} -fps_mode cfr -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g $((FPS * 2)) -keyint_min $((FPS * 2)) -sc_threshold 0 -x264-params nal-hrd=cbr:force-cfr=1 -b:v ${VIDEO_BITRATE} -minrate ${VIDEO_BITRATE} -maxrate ${VIDEO_MAXRATE} -bufsize ${VIDEO_BUFSIZE})"
+fi
+
 cat > "$INGEST_LOOP" <<EOF
 #!/usr/bin/env bash
 set -u
@@ -272,13 +289,11 @@ VIDEO_FALLBACK_ON_MISS="${VIDEO_FALLBACK_ON_MISS}"
 UDP_RW_TIMEOUT_US="${UDP_RW_TIMEOUT_US}"
 UDP_DRAIN_SECS="${UDP_DRAIN_SECS}"
 INGEST_PROGRESS="${INGEST_PROGRESS}"
-SYNTHETIC_VIDEO_INPUT="${SYNTHETIC_VIDEO_INPUT}"
-BASE_AUDIO_INPUT="${BASE_AUDIO_INPUT}"
-AUDIO1_INPUT="${AUDIO1_INPUT}"
-AUDIO2_INPUT="${AUDIO2_INPUT}"
-FILTER_COMPLEX="${FILTER_COMPLEX}"
-VIDEO_ENCODE_ARGS="${VIDEO_ENCODE_ARGS}"
 AUDIO_BITRATE="${AUDIO_BITRATE}"
+FILTER_COMPLEX="${FILTER_COMPLEX}"
+AUDIO1_ARGS=${AUDIO1_ARRAY_LITERAL}
+AUDIO2_ARGS=${AUDIO2_ARRAY_LITERAL}
+VIDEO_ENCODE_ARGS=${VIDEO_ENCODE_ARRAY_LITERAL}
 
 udp_video_is_ready() {
   local url="\$1"
@@ -311,49 +326,49 @@ drain_udp_video() {
 
 resolve_video_input() {
   if [[ "\${VIDEO_SOURCE_MODE}" == "synthetic" ]]; then
-    echo "\${SYNTHETIC_VIDEO_INPUT}"
+    printf '%s\n' -f lavfi -i "color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
     return
   fi
   if [[ "\${VIDEO_SOURCE_MODE}" == "wait" ]]; then
     if wait_udp_video_ready "\${VIDEO_READER_URL}" "\${VIDEO_WAIT_TIMEOUT}"; then
-      echo "-rw_timeout \${UDP_RW_TIMEOUT_US} -thread_queue_size 16384 -i \"\${VIDEO_READER_URL}\""
+      printf '%s\n' -rw_timeout "\${UDP_RW_TIMEOUT_US}" -thread_queue_size 16384 -i "\${VIDEO_READER_URL}"
       return
     fi
     if [[ "\${VIDEO_FALLBACK_ON_MISS}" == "1" ]]; then
       echo "[ingest] \$(date -Is) video wait timeout, synthetic fallback" >&2
-      echo "\${SYNTHETIC_VIDEO_INPUT}"
+      printf '%s\n' -f lavfi -i "color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
       return
     fi
     echo "[ingest] \$(date -Is) video wait timeout, attaching anyway" >&2
-    echo "-rw_timeout \${UDP_RW_TIMEOUT_US} -thread_queue_size 16384 -i \"\${VIDEO_READER_URL}\""
+    printf '%s\n' -rw_timeout "\${UDP_RW_TIMEOUT_US}" -thread_queue_size 16384 -i "\${VIDEO_READER_URL}"
     return
   fi
   if udp_video_is_ready "\${VIDEO_READER_URL}"; then
-    echo "-rw_timeout \${UDP_RW_TIMEOUT_US} -thread_queue_size 16384 -i \"\${VIDEO_READER_URL}\""
+    printf '%s\n' -rw_timeout "\${UDP_RW_TIMEOUT_US}" -thread_queue_size 16384 -i "\${VIDEO_READER_URL}"
   elif [[ "\${VIDEO_FALLBACK_ON_MISS}" == "1" ]]; then
     echo "[ingest] \$(date -Is) video not ready, synthetic fallback" >&2
-    echo "\${SYNTHETIC_VIDEO_INPUT}"
+    printf '%s\n' -f lavfi -i "color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
   else
-    echo "-rw_timeout \${UDP_RW_TIMEOUT_US} -thread_queue_size 16384 -i \"\${VIDEO_READER_URL}\""
+    printf '%s\n' -rw_timeout "\${UDP_RW_TIMEOUT_US}" -thread_queue_size 16384 -i "\${VIDEO_READER_URL}"
   fi
 }
 
 while true; do
   drain_udp_video
-  VIDEO_INPUT_ARG="\$(resolve_video_input)"
+  mapfile -t VIDEO_INPUT_ARGS < <(resolve_video_input)
   rm -f "\${INGEST_PROGRESS}"
   echo "[ingest] \$(date -Is) ffmpeg starting"
   ffmpeg -hide_banner -loglevel info \\
     -fflags +genpts+discardcorrupt+igndts \\
     -analyzeduration 2M -probesize 2M \\
     -err_detect ignore_err \\
-    \${VIDEO_INPUT_ARG} \\
-    \${BASE_AUDIO_INPUT} \\
-    \${AUDIO1_INPUT} \\
-    \${AUDIO2_INPUT} \\
-    -map 0:v:0 -map "[aout]" \\
+    "\${VIDEO_INPUT_ARGS[@]}" \\
+    -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \\
+    "\${AUDIO1_ARGS[@]}" \\
+    "\${AUDIO2_ARGS[@]}" \\
     -filter_complex "\${FILTER_COMPLEX}" \\
-    \${VIDEO_ENCODE_ARGS} \\
+    -map 0:v:0 -map "[aout]" \\
+    "\${VIDEO_ENCODE_ARGS[@]}" \\
     -c:a aac -b:a "\${AUDIO_BITRATE}" -ar 48000 -ac 2 \\
     -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \\
     -progress "\${INGEST_PROGRESS}" -nostats \\
