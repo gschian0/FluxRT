@@ -5,6 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# tmux windows often have a minimal PATH — ss/netstat live under /usr/sbin
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 ENV_FILE="${1:-scripts/streaming/rtmp_targets.env}"
 MEDIAMTX_BIN="${MEDIAMTX_BIN:-$REPO_ROOT/tools/mediamtx/mediamtx}"
 MEDIAMTX_CFG="${MEDIAMTX_CFG:-/tmp/fluxrt-mediamtx.yml}"
@@ -34,7 +37,7 @@ VIDEO_BITRATE="${VIDEO_BITRATE:-550k}"
 VIDEO_MAXRATE="${VIDEO_MAXRATE:-550k}"
 VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-1100k}"
 AUDIO_BITRATE="${AUDIO_BITRATE:-128k}"
-VIDEO_TRANSCODE_MODE="${VIDEO_TRANSCODE_MODE:-transcode}"
+VIDEO_TRANSCODE_MODE="${VIDEO_TRANSCODE_MODE:-copy}"
 MUSIC_MIX_VOLUME="${MUSIC_MIX_VOLUME:-0.85}"
 TTS_MIX_VOLUME="${TTS_MIX_VOLUME:-1.55}"
 MUSIC_WAIT_TIMEOUT="${MUSIC_WAIT_TIMEOUT:-30}"
@@ -76,6 +79,13 @@ if [[ -z "$TARGET_URL" ]]; then
 fi
 
 scripts/streaming/stop_mediamtx_fanout.sh >/dev/null 2>&1 || true
+sleep 2
+if pgrep -f '/tmp/fluxrt-mediamtx-ingest-loop.sh' >/dev/null 2>&1 \
+   || pgrep -f '/tmp/fluxrt-mediamtx-egress-loop.sh' >/dev/null 2>&1; then
+  echo "ERROR: duplicate fanout loops still running after stop — aborting start"
+  pgrep -af '/tmp/fluxrt-mediamtx-.*-loop.sh' || true
+  exit 1
+fi
 rm -f "$INGEST_PROGRESS" "$EGRESS_PROGRESS"
 
 if [[ ! -x "$MEDIAMTX_BIN" ]]; then
@@ -101,7 +111,7 @@ YAML
 
 rtmp_port_is_listening() {
   if command -v ss >/dev/null 2>&1; then
-    ss -ltn | grep -qE '(:1935 |:1935$)'
+    ss -ltn 2>/dev/null | grep -qE '(:1935 |:1935$)'
     return $?
   fi
   if command -v netstat >/dev/null 2>&1; then
@@ -253,7 +263,7 @@ BASE_AUDIO_INPUT="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
 FILTER_COMPLEX="[1:a]volume=1.0[base];[2:a]volume=${MUSIC_MIX_VOLUME}[music];[3:a]volume=${TTS_VOL_EFFECTIVE}[tts];[base][music][tts]amix=inputs=3:duration=longest:dropout_transition=0:normalize=0,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]"
 
 if [[ "$VIDEO_TRANSCODE_MODE" == "copy" ]]; then
-  VIDEO_ENCODE_ARGS='-c:v copy'
+  VIDEO_ENCODE_ARGS='-c:v copy -bsf:v h264_mp4toannexb'
 else
   VIDEO_ENCODE_ARGS="-vf scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT} -r ${FPS} -fps_mode cfr -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g $((FPS * 2)) -keyint_min $((FPS * 2)) -sc_threshold 0 -x264-params nal-hrd=cbr:force-cfr=1 -b:v ${VIDEO_BITRATE} -minrate ${VIDEO_BITRATE} -maxrate ${VIDEO_MAXRATE} -bufsize ${VIDEO_BUFSIZE}"
 fi
@@ -278,7 +288,7 @@ else
 fi
 
 if [[ "$VIDEO_TRANSCODE_MODE" == "copy" ]]; then
-  VIDEO_ENCODE_ARRAY_LITERAL='(-c:v copy)'
+  VIDEO_ENCODE_ARRAY_LITERAL='(-c:v copy -bsf:v h264_mp4toannexb)'
 else
   VFILTER="scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}"
   VIDEO_ENCODE_ARRAY_LITERAL="(-vf $(shell_single_quote "$VFILTER") -r ${FPS} -fps_mode cfr -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g $((FPS * 2)) -keyint_min $((FPS * 2)) -sc_threshold 0 -x264-params nal-hrd=cbr:force-cfr=1 -b:v ${VIDEO_BITRATE} -minrate ${VIDEO_BITRATE} -maxrate ${VIDEO_MAXRATE} -bufsize ${VIDEO_BUFSIZE})"
@@ -335,6 +345,17 @@ drain_udp_video() {
     -c copy -f null - 2>/dev/null || true
 }
 
+wait_udp_keyframe() {
+  local url="\$1"
+  local wait_secs="\${2:-20}"
+  echo "[ingest] \$(date -Is) waiting for keyframe on UDP video (up to \${wait_secs}s)"
+  timeout "\${wait_secs}" ffmpeg -hide_banner -loglevel error \\
+    -fflags +discardcorrupt \\
+    -rw_timeout 5000000 \\
+    -i "\${url}" \\
+    -vf "select='eq(pict_type,I)'" -vsync vfr -frames:v 1 -f null - 2>/dev/null
+}
+
 resolve_video_input() {
   if [[ "\${VIDEO_SOURCE_MODE}" == "synthetic" ]]; then
     printf '%s\n' -f lavfi -i "color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
@@ -370,6 +391,8 @@ while true; do
     drain_udp_video
     echo "[ingest] \$(date -Is) waiting \${INGEST_RECONNECT_SLEEP}s for MediaMTX publisher slot"
     sleep "\${INGEST_RECONNECT_SLEEP}"
+    wait_udp_keyframe "\${VIDEO_READER_URL}" 20 || \\
+      echo "[ingest] \$(date -Is) keyframe wait timed out, attaching anyway" >&2
   fi
   first_start=0
   if ! wait_udp_video_ready "\${VIDEO_READER_URL}" "\${VIDEO_WAIT_TIMEOUT}"; then

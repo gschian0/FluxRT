@@ -27,6 +27,8 @@ X264_PRESET="${X264_PRESET:-ultrafast}"
 ENABLE_YOUTUBE="${ENABLE_YOUTUBE:-1}"
 ENABLE_TWITCH="${ENABLE_TWITCH:-1}"
 ENABLE_FACEBOOK="${ENABLE_FACEBOOK:-1}"
+ENABLE_OWNCAST="${ENABLE_OWNCAST:-0}"
+OWNCAST_RTMP_URL="${OWNCAST_RTMP_URL:-rtmp://127.0.0.1:1935/live/owncast}"
 # url mode skips ffprobe probing of UDP ports — prevents silence-fill freeze at startup.
 AUDIO_SOURCE_MODE="${AUDIO_SOURCE_MODE:-url}"
 AUDIO_INPUT_URL="${AUDIO_INPUT_URL:-udp://127.0.0.1:5002?pkt_size=1316}"
@@ -39,12 +41,14 @@ STARTUP_BARS_SECONDS="${STARTUP_BARS_SECONDS:-0}"
 STARTUP_BARS_EXTEND_SECONDS="${STARTUP_BARS_EXTEND_SECONDS:-5}"
 MAX_BARS_EXTENSIONS="${MAX_BARS_EXTENSIONS:-2}"
 WAIT_FOR_VIDEO_READY="${WAIT_FOR_VIDEO_READY:-0}"
-ENABLE_RECONNECT_BARS="${ENABLE_RECONNECT_BARS:-1}"
+ENABLE_RECONNECT_BARS="${ENABLE_RECONNECT_BARS:-0}"
 RECONNECT_BARS_SECONDS="${RECONNECT_BARS_SECONDS:-4}"
 RECONNECT_SLEEP_SECONDS="${RECONNECT_SLEEP_SECONDS:-1}"
 ENABLE_LOCAL_MONITOR="${ENABLE_LOCAL_MONITOR:-0}"
 MONITOR_HLS_DIR="${MONITOR_HLS_DIR:-/tmp/fluxrt-monitor}"
 MONITOR_HLS_PLAYLIST="${MONITOR_HLS_PLAYLIST:-$MONITOR_HLS_DIR/stream.m3u8}"
+VIDEO_TRANSCODE_MODE="${VIDEO_TRANSCODE_MODE:-copy}"
+UDP_RW_TIMEOUT_US="${UDP_RW_TIMEOUT_US:-15000000}"
 
 ensure_udp_buffer_params() {
   local url="$1"
@@ -92,6 +96,7 @@ TARGETS=()
 [[ "$ENABLE_YOUTUBE" == "1" && -n "${YOUTUBE_RTMP_URL:-}" ]] && TARGETS+=("[f=flv:onfail=ignore]${YOUTUBE_RTMP_URL}")
 [[ "$ENABLE_TWITCH" == "1" && -n "${TWITCH_RTMP_URL:-}" ]] && TARGETS+=("[f=flv:onfail=ignore]${TWITCH_RTMP_URL}")
 [[ "$ENABLE_FACEBOOK" == "1" && -n "${FACEBOOK_RTMP_URL:-}" ]] && TARGETS+=("[f=flv:onfail=ignore]${FACEBOOK_RTMP_URL}")
+[[ "$ENABLE_OWNCAST" == "1" && -n "${OWNCAST_RTMP_URL:-}" ]] && TARGETS+=("[f=flv:onfail=ignore]${OWNCAST_RTMP_URL}")
 if [[ "$ENABLE_LOCAL_MONITOR" == "1" ]]; then
   mkdir -p "$MONITOR_HLS_DIR"
   rm -f "$MONITOR_HLS_DIR"/stream.m3u8 "$MONITOR_HLS_DIR"/stream_*.ts
@@ -264,56 +269,113 @@ _run_fanout_loop() {
       break
     fi
 
+    if [[ "$WAIT_FOR_VIDEO_READY" == "1" ]]; then
+      wait_attempts=0
+      while ! video_input_ready; do
+        if [[ ! -f "$PID_FILE" ]]; then
+          break
+        fi
+        wait_attempts=$((wait_attempts + 1))
+        if [[ "$wait_attempts" -gt 60 ]]; then
+          echo "[fanout] video not ready after 60 attempts; starting anyway." >> "$LOG_FILE"
+          break
+        fi
+        echo "[fanout] waiting for UDP video on $INPUT_URL (attempt $wait_attempts)..." >> "$LOG_FILE"
+        sleep 2
+      done
+    fi
+
     echo "[fanout] $(date -Is) starting ffmpeg..." >> "$LOG_FILE"
     if [[ "$ENABLE_TTS_OVERLAY" == "1" ]]; then
-      ffmpeg -hide_banner -loglevel info \
-        -progress "${PROGRESS_FILE:-/tmp/fluxrt-fanout-progress.txt}" -nostats \
-        -fflags +genpts+discardcorrupt+igndts \
-        -err_detect ignore_err \
-        -analyzeduration 2M -probesize 2M \
-        -timeout "${UDP_READ_TIMEOUT_US:-5000000}" \
-        -thread_queue_size 16384 \
-        -i "$INPUT_URL" \
-        "${AUDIO_INPUT_ARGS[@]}" \
-        "${TTS_INPUT_ARGS[@]}" \
-        -map 0:v:0 -map "[aout]" \
-        -vf "scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}" \
-        -filter_complex "[1:a]volume=${MUSIC_MIX_VOLUME}[music];[2:a]volume=${TTS_MIX_VOLUME}[tts];[music][tts]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]" \
-        -r "$FPS" -fps_mode cfr \
-        -c:v libx264 -preset "$X264_PRESET" -tune zerolatency -pix_fmt yuv420p \
-        -force_key_frames "expr:gte(t,n_forced*2)" \
-        -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 \
-        -x264-params "nal-hrd=cbr:force-cfr=1" \
-        -b:v "$VIDEO_BITRATE" -minrate "$VIDEO_BITRATE" -maxrate "$VIDEO_MAXRATE" -bufsize "$VIDEO_BUFSIZE" \
-        -c:a aac -b:a "$AUDIO_BITRATE" -ar 48000 -ac 2 \
-        -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
-        -flvflags no_duration_filesize \
-        -f tee "$TEE_OUTPUT" \
-        >> "$LOG_FILE" 2>&1
+      if [[ "$VIDEO_TRANSCODE_MODE" == "copy" ]]; then
+        ffmpeg -hide_banner -loglevel info \
+          -progress "${PROGRESS_FILE:-/tmp/fluxrt-fanout-progress.txt}" -nostats \
+          -fflags +genpts+discardcorrupt+igndts \
+          -err_detect ignore_err \
+          -analyzeduration 2M -probesize 2M \
+          -rw_timeout "${UDP_RW_TIMEOUT_US}" \
+          -thread_queue_size 16384 \
+          -i "$INPUT_URL" \
+          "${AUDIO_INPUT_ARGS[@]}" \
+          "${TTS_INPUT_ARGS[@]}" \
+          -map 0:v:0 -map "[aout]" \
+          -filter_complex "[1:a]volume=${MUSIC_MIX_VOLUME}[music];[2:a]volume=${TTS_MIX_VOLUME}[tts];[music][tts]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]" \
+          -c:v copy -bsf:v h264_mp4toannexb \
+          -c:a aac -b:a "$AUDIO_BITRATE" -ar 48000 -ac 2 \
+          -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
+          -flvflags no_duration_filesize \
+          -f tee "$TEE_OUTPUT" \
+          >> "$LOG_FILE" 2>&1
+      else
+        ffmpeg -hide_banner -loglevel info \
+          -progress "${PROGRESS_FILE:-/tmp/fluxrt-fanout-progress.txt}" -nostats \
+          -fflags +genpts+discardcorrupt+igndts \
+          -err_detect ignore_err \
+          -analyzeduration 2M -probesize 2M \
+          -rw_timeout "${UDP_RW_TIMEOUT_US}" \
+          -thread_queue_size 16384 \
+          -i "$INPUT_URL" \
+          "${AUDIO_INPUT_ARGS[@]}" \
+          "${TTS_INPUT_ARGS[@]}" \
+          -map 0:v:0 -map "[aout]" \
+          -vf "scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}" \
+          -filter_complex "[1:a]volume=${MUSIC_MIX_VOLUME}[music];[2:a]volume=${TTS_MIX_VOLUME}[tts];[music][tts]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]" \
+          -r "$FPS" -fps_mode cfr \
+          -c:v libx264 -preset "$X264_PRESET" -tune zerolatency -pix_fmt yuv420p \
+          -force_key_frames "expr:gte(t,n_forced*2)" \
+          -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 \
+          -x264-params "nal-hrd=cbr:force-cfr=1" \
+          -b:v "$VIDEO_BITRATE" -minrate "$VIDEO_BITRATE" -maxrate "$VIDEO_MAXRATE" -bufsize "$VIDEO_BUFSIZE" \
+          -c:a aac -b:a "$AUDIO_BITRATE" -ar 48000 -ac 2 \
+          -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
+          -flvflags no_duration_filesize \
+          -f tee "$TEE_OUTPUT" \
+          >> "$LOG_FILE" 2>&1
+      fi
     else
-      ffmpeg -hide_banner -loglevel info \
-        -progress "${PROGRESS_FILE:-/tmp/fluxrt-fanout-progress.txt}" -nostats \
-        -fflags +genpts+discardcorrupt+igndts \
-        -err_detect ignore_err \
-        -analyzeduration 2M -probesize 2M \
-        -timeout "${UDP_READ_TIMEOUT_US:-5000000}" \
-        -thread_queue_size 16384 \
-        -i "$INPUT_URL" \
-        "${AUDIO_INPUT_ARGS[@]}" \
-        -map 0:v:0 -map 1:a:0 \
-        -vf "scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}" \
-        -r "$FPS" -fps_mode cfr \
-        -c:v libx264 -preset "$X264_PRESET" -tune zerolatency -pix_fmt yuv420p \
-        -force_key_frames "expr:gte(t,n_forced*2)" \
-        -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 \
-        -x264-params "nal-hrd=cbr:force-cfr=1" \
-        -b:v "$VIDEO_BITRATE" -minrate "$VIDEO_BITRATE" -maxrate "$VIDEO_MAXRATE" -bufsize "$VIDEO_BUFSIZE" \
-        -af "aresample=async=1:min_hard_comp=0.100:first_pts=0" \
-        -c:a aac -b:a "$AUDIO_BITRATE" -ar 48000 -ac 2 \
-        -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
-        -flvflags no_duration_filesize \
-        -f tee "$TEE_OUTPUT" \
-        >> "$LOG_FILE" 2>&1
+      if [[ "$VIDEO_TRANSCODE_MODE" == "copy" ]]; then
+        ffmpeg -hide_banner -loglevel info \
+          -progress "${PROGRESS_FILE:-/tmp/fluxrt-fanout-progress.txt}" -nostats \
+          -fflags +genpts+discardcorrupt+igndts \
+          -err_detect ignore_err \
+          -analyzeduration 2M -probesize 2M \
+          -rw_timeout "${UDP_RW_TIMEOUT_US}" \
+          -thread_queue_size 16384 \
+          -i "$INPUT_URL" \
+          "${AUDIO_INPUT_ARGS[@]}" \
+          -map 0:v:0 -map 1:a:0 \
+          -c:v copy -bsf:v h264_mp4toannexb \
+          -af "aresample=async=1:min_hard_comp=0.100:first_pts=0" \
+          -c:a aac -b:a "$AUDIO_BITRATE" -ar 48000 -ac 2 \
+          -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
+          -flvflags no_duration_filesize \
+          -f tee "$TEE_OUTPUT" \
+          >> "$LOG_FILE" 2>&1
+      else
+        ffmpeg -hide_banner -loglevel info \
+          -progress "${PROGRESS_FILE:-/tmp/fluxrt-fanout-progress.txt}" -nostats \
+          -fflags +genpts+discardcorrupt+igndts \
+          -err_detect ignore_err \
+          -analyzeduration 2M -probesize 2M \
+          -rw_timeout "${UDP_RW_TIMEOUT_US}" \
+          -thread_queue_size 16384 \
+          -i "$INPUT_URL" \
+          "${AUDIO_INPUT_ARGS[@]}" \
+          -map 0:v:0 -map 1:a:0 \
+          -vf "scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}" \
+          -r "$FPS" -fps_mode cfr \
+          -c:v libx264 -preset "$X264_PRESET" -tune zerolatency -pix_fmt yuv420p \
+          -force_key_frames "expr:gte(t,n_forced*2)" \
+          -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 \
+          -x264-params "nal-hrd=cbr:force-cfr=1" \
+          -b:v "$VIDEO_BITRATE" -minrate "$VIDEO_BITRATE" -maxrate "$VIDEO_MAXRATE" -bufsize "$VIDEO_BUFSIZE" \
+          -af "aresample=async=1:min_hard_comp=0.100:first_pts=0" \
+          -c:a aac -b:a "$AUDIO_BITRATE" -ar 48000 -ac 2 \
+          -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
+          -flvflags no_duration_filesize \
+          -f tee "$TEE_OUTPUT" \
+          >> "$LOG_FILE" 2>&1
+      fi
     fi
 
     EXIT_CODE=$?
@@ -331,7 +393,7 @@ _run_fanout_loop() {
   done
 }
 
-nohup bash -c "$(declare -f run_bars_segment); $(declare -f _run_fanout_loop); \
+nohup bash -c "$(declare -f video_input_ready); $(declare -f audio_input_ready); $(declare -f run_bars_segment); $(declare -f _run_fanout_loop); \
   INPUT_URL='$INPUT_URL'; \
   AUDIO_INPUT_ARGS=(${AUDIO_INPUT_ARGS[*]@Q}); \
   PREROLL_AUDIO_INPUT_ARGS=(${PREROLL_AUDIO_INPUT_ARGS[*]@Q}); \
@@ -347,7 +409,9 @@ nohup bash -c "$(declare -f run_bars_segment); $(declare -f _run_fanout_loop); \
   ENABLE_RECONNECT_BARS='$ENABLE_RECONNECT_BARS'; \
   RECONNECT_BARS_SECONDS='$RECONNECT_BARS_SECONDS'; \
   RECONNECT_SLEEP_SECONDS='$RECONNECT_SLEEP_SECONDS'; \
-  UDP_READ_TIMEOUT_US='${UDP_READ_TIMEOUT_US:-5000000}'; \
+  WAIT_FOR_VIDEO_READY='$WAIT_FOR_VIDEO_READY'; \
+  UDP_RW_TIMEOUT_US='${UDP_RW_TIMEOUT_US}'; \
+  VIDEO_TRANSCODE_MODE='${VIDEO_TRANSCODE_MODE}'; \
   PROGRESS_FILE='${PROGRESS_FILE:-/tmp/fluxrt-fanout-progress.txt}'; \
   TEE_OUTPUT='$TEE_OUTPUT'; \
   PID_FILE='$PID_FILE'; LOG_FILE='$LOG_FILE'; \
