@@ -22,9 +22,9 @@ VIDEO_INPUT_URL="${VIDEO_INPUT_URL:-udp://127.0.0.1:5000?pkt_size=1316}"
 AUDIO_INPUT_URL="${AUDIO_INPUT_URL:-udp://127.0.0.1:5002?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1}"
 TTS_INPUT_URL="${TTS_INPUT_URL:-udp://127.0.0.1:5004?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1}"
 
-UDP_READER_FIFO_SIZE="${UDP_READER_FIFO_SIZE:-1000000}"
-UDP_RW_TIMEOUT_US="${UDP_RW_TIMEOUT_US:-5000000}"
-UDP_DRAIN_SECS="${UDP_DRAIN_SECS:-2}"
+UDP_RW_TIMEOUT_US="${UDP_RW_TIMEOUT_US:-15000000}"
+INGEST_RECONNECT_SLEEP="${INGEST_RECONNECT_SLEEP:-3}"
+DRAIN_ON_RECONNECT="${DRAIN_ON_RECONNECT:-0}"
 
 ENABLE_TTS_OVERLAY="${ENABLE_TTS_OVERLAY:-1}"
 OUTPUT_WIDTH="${OUTPUT_WIDTH:-288}"
@@ -260,22 +260,28 @@ fi
 
 SYNTHETIC_VIDEO_INPUT="-f lavfi -i color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
 
+shell_single_quote() {
+  local s="$1"
+  printf "'%s'" "${s//\'/\'\\\'\'}"
+}
+
 if [[ "$AUDIO1_INPUT" == *"anullsrc"* ]]; then
   AUDIO1_ARRAY_LITERAL='(-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000)'
 else
-  AUDIO1_ARRAY_LITERAL="(-thread_queue_size 16384 -i $(printf '%q' "$AUDIO_INPUT_URL"))"
+  AUDIO1_ARRAY_LITERAL="(-thread_queue_size 16384 -i $(shell_single_quote "$AUDIO_INPUT_URL"))"
 fi
 
 if [[ "$AUDIO2_INPUT" == *"anullsrc"* ]]; then
   AUDIO2_ARRAY_LITERAL='(-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000)'
 else
-  AUDIO2_ARRAY_LITERAL="(-thread_queue_size 16384 -i $(printf '%q' "$TTS_INPUT_URL"))"
+  AUDIO2_ARRAY_LITERAL="(-thread_queue_size 16384 -i $(shell_single_quote "$TTS_INPUT_URL"))"
 fi
 
 if [[ "$VIDEO_TRANSCODE_MODE" == "copy" ]]; then
   VIDEO_ENCODE_ARRAY_LITERAL='(-c:v copy)'
 else
-  VIDEO_ENCODE_ARRAY_LITERAL="(-vf scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT} -r ${FPS} -fps_mode cfr -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g $((FPS * 2)) -keyint_min $((FPS * 2)) -sc_threshold 0 -x264-params nal-hrd=cbr:force-cfr=1 -b:v ${VIDEO_BITRATE} -minrate ${VIDEO_BITRATE} -maxrate ${VIDEO_MAXRATE} -bufsize ${VIDEO_BUFSIZE})"
+  VFILTER="scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}"
+  VIDEO_ENCODE_ARRAY_LITERAL="(-vf $(shell_single_quote "$VFILTER") -r ${FPS} -fps_mode cfr -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g $((FPS * 2)) -keyint_min $((FPS * 2)) -sc_threshold 0 -x264-params nal-hrd=cbr:force-cfr=1 -b:v ${VIDEO_BITRATE} -minrate ${VIDEO_BITRATE} -maxrate ${VIDEO_MAXRATE} -bufsize ${VIDEO_BUFSIZE})"
 fi
 
 cat > "$INGEST_LOOP" <<EOF
@@ -287,7 +293,8 @@ VIDEO_SOURCE_MODE="${VIDEO_SOURCE_MODE}"
 VIDEO_WAIT_TIMEOUT="${VIDEO_WAIT_TIMEOUT}"
 VIDEO_FALLBACK_ON_MISS="${VIDEO_FALLBACK_ON_MISS}"
 UDP_RW_TIMEOUT_US="${UDP_RW_TIMEOUT_US}"
-UDP_DRAIN_SECS="${UDP_DRAIN_SECS}"
+INGEST_RECONNECT_SLEEP="${INGEST_RECONNECT_SLEEP}"
+DRAIN_ON_RECONNECT="${DRAIN_ON_RECONNECT}"
 INGEST_PROGRESS="${INGEST_PROGRESS}"
 AUDIO_BITRATE="${AUDIO_BITRATE}"
 FILTER_COMPLEX="${FILTER_COMPLEX}"
@@ -317,8 +324,12 @@ wait_udp_video_ready() {
 }
 
 drain_udp_video() {
-  echo "[ingest] \$(date -Is) draining stale UDP video buffer"
-  timeout "\${UDP_DRAIN_SECS}" ffmpeg -hide_banner -loglevel error \\
+  # Do not drain before every ffmpeg start — binding UDP 5000 disrupts Gradio publisher.
+  if [[ "\${DRAIN_ON_RECONNECT}" != "1" ]]; then
+    return 0
+  fi
+  echo "[ingest] \$(date -Is) draining stale UDP video buffer (DRAIN_ON_RECONNECT=1)"
+  timeout 1 ffmpeg -hide_banner -loglevel error \\
     -rw_timeout 500000 \\
     -i "\${VIDEO_READER_URL}" \\
     -c copy -f null - 2>/dev/null || true
@@ -353,8 +364,23 @@ resolve_video_input() {
   fi
 }
 
+first_start=1
 while true; do
-  drain_udp_video
+  if [[ "\${first_start}" -eq 0 ]]; then
+    drain_udp_video
+    echo "[ingest] \$(date -Is) waiting \${INGEST_RECONNECT_SLEEP}s for MediaMTX publisher slot"
+    sleep "\${INGEST_RECONNECT_SLEEP}"
+  fi
+  first_start=0
+  if ! wait_udp_video_ready "\${VIDEO_READER_URL}" "\${VIDEO_WAIT_TIMEOUT}"; then
+    if [[ "\${VIDEO_FALLBACK_ON_MISS}" == "1" ]]; then
+      echo "[ingest] \$(date -Is) video not ready, using synthetic until UDP 5000 returns" >&2
+    else
+      echo "[ingest] \$(date -Is) video not ready, retrying" >&2
+      sleep "\${INGEST_RECONNECT_SLEEP}"
+      continue
+    fi
+  fi
   mapfile -t VIDEO_INPUT_ARGS < <(resolve_video_input)
   rm -f "\${INGEST_PROGRESS}"
   echo "[ingest] \$(date -Is) ffmpeg starting"
@@ -371,10 +397,10 @@ while true; do
     "\${VIDEO_ENCODE_ARGS[@]}" \\
     -c:a aac -b:a "\${AUDIO_BITRATE}" -ar 48000 -ac 2 \\
     -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \\
+    -flvflags no_duration_filesize \\
     -progress "\${INGEST_PROGRESS}" -nostats \\
     -f flv "rtmp://127.0.0.1:1935/fluxrt" || true
-  echo "[ingest] \$(date -Is) ffmpeg exited, reconnecting in 1s"
-  sleep 1
+  echo "[ingest] \$(date -Is) ffmpeg exited, reconnecting"
 done
 EOF
 chmod +x "$INGEST_LOOP"

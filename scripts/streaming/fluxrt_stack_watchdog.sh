@@ -54,7 +54,17 @@ get_progress_frame() {
   if [[ ! -f "$file" ]]; then
     return
   fi
-  grep -E '^frame=' "$file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' '
+  local frame
+  frame="$(grep -E '^frame=' "$file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')"
+  if [[ -n "$frame" && "$frame" =~ ^[0-9]+$ ]]; then
+    echo "$frame"
+    return
+  fi
+  local out_ms
+  out_ms="$(grep -E '^out_time_ms=' "$file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')"
+  if [[ -n "$out_ms" && "$out_ms" =~ ^[0-9]+$ ]]; then
+    echo "$out_ms"
+  fi
 }
 
 detect_fanout_mode() {

@@ -16,10 +16,22 @@ log() {
   echo "[smoke-mediamtx] $(date -Is) $*" | tee -a "$LOG_FILE"
 }
 
-progress_frame() {
+progress_value() {
   local file="$1"
   [[ -f "$file" ]] || return 1
-  grep -E '^frame=' "$file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' '
+  local frame
+  frame="$(grep -E '^frame=' "$file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')"
+  if [[ -n "$frame" && "$frame" =~ ^[0-9]+$ ]]; then
+    echo "$frame"
+    return 0
+  fi
+  local out_ms
+  out_ms="$(grep -E '^out_time_ms=' "$file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')"
+  if [[ -n "$out_ms" && "$out_ms" =~ ^[0-9]+$ ]]; then
+    echo "$out_ms"
+    return 0
+  fi
+  return 1
 }
 
 wait_for_progress() {
@@ -28,10 +40,10 @@ wait_for_progress() {
   local timeout_secs="$3"
   local i=0
   while [[ "$i" -lt "$timeout_secs" ]]; do
-    local frame
-    frame="$(progress_frame "$file" || true)"
-    if [[ -n "$frame" && "$frame" =~ ^[0-9]+$ ]]; then
-      log "${label} progress frame=${frame}"
+    local val
+    val="$(progress_value "$file" || true)"
+    if [[ -n "$val" && "$val" =~ ^[0-9]+$ ]]; then
+      log "${label} progress value=${val}"
       return 0
     fi
     sleep 5
@@ -57,8 +69,8 @@ egress_change=$SECONDS
 end=$((SECONDS + DURATION_SECS))
 
 while [[ $SECONDS -lt $end ]]; do
-  ingest_frame="$(progress_frame "$INGEST_PROGRESS" || true)"
-  egress_frame="$(progress_frame "$EGRESS_PROGRESS" || true)"
+  ingest_frame="$(progress_value "$INGEST_PROGRESS" || true)"
+  egress_frame="$(progress_value "$EGRESS_PROGRESS" || true)"
 
   if [[ -n "$ingest_frame" && "$ingest_frame" =~ ^[0-9]+$ ]]; then
     if [[ "$ingest_frame" != "$ingest_last" ]]; then
