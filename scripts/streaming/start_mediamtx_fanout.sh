@@ -31,10 +31,10 @@ AUDIO_BITRATE="${AUDIO_BITRATE:-96k}"
 VIDEO_TRANSCODE_MODE="${VIDEO_TRANSCODE_MODE:-copy}"
 MUSIC_MIX_VOLUME="${MUSIC_MIX_VOLUME:-0.65}"
 TTS_MIX_VOLUME="${TTS_MIX_VOLUME:-1.80}"
-MUSIC_WAIT_TIMEOUT="${MUSIC_WAIT_TIMEOUT:-30}"
+MUSIC_WAIT_TIMEOUT="${MUSIC_WAIT_TIMEOUT:-120}"
 TTS_WAIT_TIMEOUT="${TTS_WAIT_TIMEOUT:-40}"
 VIDEO_SOURCE_MODE="${VIDEO_SOURCE_MODE:-url}"
-VIDEO_WAIT_TIMEOUT="${VIDEO_WAIT_TIMEOUT:-6}"
+VIDEO_WAIT_TIMEOUT="${VIDEO_WAIT_TIMEOUT:-30}"
 VIDEO_FALLBACK_ON_MISS="${VIDEO_FALLBACK_ON_MISS:-1}"
 
 ENABLE_YOUTUBE="${ENABLE_YOUTUBE:-0}"
@@ -95,13 +95,13 @@ nohup "$MEDIAMTX_BIN" "$MEDIAMTX_CFG" > "$MEDIAMTX_LOG" 2>&1 &
 echo "$!" > "$MEDIAMTX_PID"
 
 for _ in $(seq 1 50); do
-  if ss -ltn | grep -q ':1935 '; then
+  if (echo > /dev/tcp/127.0.0.1/1935) 2>/dev/null; then
     break
   fi
   sleep 0.1
 done
 
-if ! ss -ltn | grep -q ':1935 '; then
+if ! (echo > /dev/tcp/127.0.0.1/1935) 2>/dev/null; then
   echo "MediaMTX failed to bind port 1935. See $MEDIAMTX_LOG"
   exit 1
 fi
@@ -180,6 +180,7 @@ BASE_AUDIO_INPUT="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
 
 if [[ "$AUDIO_SOURCE_MODE" == "url" ]]; then
   if wait_udp_audio_ready "$AUDIO_INPUT_URL" "$MUSIC_WAIT_TIMEOUT"; then
+    echo "[fanout] music input ready, binding UDP"
     AUDIO1_INPUT="-thread_queue_size 16384 -i \"${AUDIO_INPUT_URL}\""
   else
     echo "[fanout] music input unavailable after ${MUSIC_WAIT_TIMEOUT}s, using silence fallback"
@@ -216,12 +217,9 @@ fi
 
 if [[ "$VIDEO_SOURCE_MODE" == "synthetic" ]]; then
   VIDEO_INPUT_ARG="-f lavfi -re -i color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
-elif wait_udp_video_ready "$VIDEO_INPUT_URL" "$VIDEO_WAIT_TIMEOUT"; then
-  VIDEO_INPUT_ARG="-thread_queue_size 16384 -i \"${VIDEO_INPUT_URL}\""
-elif [[ "$VIDEO_FALLBACK_ON_MISS" == "1" ]]; then
-  echo "[fanout] video input unavailable at startup, using synthetic fallback"
-  VIDEO_INPUT_ARG="-f lavfi -re -i color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
+  VIDEO_TRANSCODE_MODE="transcode"
 else
+  echo "[fanout] binding video UDP directly (will wait for video to arrive)"
   VIDEO_INPUT_ARG="-thread_queue_size 16384 -i \"${VIDEO_INPUT_URL}\""
 fi
 
@@ -231,7 +229,6 @@ set -u
 while true; do
   ffmpeg -hide_banner -loglevel info \
     -fflags +genpts+discardcorrupt+igndts \
-    -analyzeduration 2M -probesize 2M \
     ${VIDEO_INPUT_ARG} \
     ${BASE_AUDIO_INPUT} \
     ${AUDIO1_INPUT} \
