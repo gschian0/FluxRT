@@ -1,18 +1,47 @@
-# Flux Real-Time (FluxRT) — 5090-RunPod Fork
+# Flux Real-Time (FluxRT) — 24/7 AI Streaming Pipeline
 
-> **This is a fork of [tensorforger/FluxRT](https://github.com/tensorforger/FluxRT)** tuned for **NVIDIA RTX 5090** GPUs on **RunPod**.
-> It is part of the [AI TV Stack](https://github.com/gschian0/ai-tv-stack-scripts/tree/5090-runpod) — an open-source AI television production engine.
->
-> Historical note: this stack was first developed and validated on the same class of GPU machine on **GCP**, then ported to **RunPod**.
->
-> Original GCP baseline:
-> - Container runtime: **NGC container runtime**
-> - Machine type: **g2-standard-4** (4 vCPUs, 16 GB RAM)
-> - CPU platform: **Intel Cascade Lake**
-> - Architecture: **x86_64**
-> - GPU: **1 x NVIDIA L4**
+> **Active branch:** `streaming-l40-self-healing` — 24/7 AI streaming to Twitch with self-healing pipeline  
+> **📖 Full runbook:** [`RUNBOOK_L40_STREAMING.md`](RUNBOOK_L40_STREAMING.md) — complete launch commands, cold start sequence, troubleshooting  
+> **Hardware:** Dual NVIDIA L40 GPUs (46GB each), 2TB RAM, 64 CPUs (RunPod)
 
-## What's Different in This Fork (`5090-runpod` branch)
+## What This Branch Does
+
+A 24/7 AI streaming pipeline that generates and streams live content to Twitch:
+
+- **Video:** FLUX.2-Klein-4B (int8) generates AI video frames at 288×160 @ 8fps on GPU 0
+- **Music:** MusicGen-small generates continuous crossfaded AI music on GPU 1
+- **Voice:** Edge TTS reads philosopher quotes with reverb + echo effects
+- **Self-healing:** Watchdog monitors all 7 components, auto-restarts dead ones, detects audio silence
+- **Pipe auto-recovery:** MusicGen automatically restarts its ffmpeg encoder on broken pipe errors
+
+### Architecture
+
+```
+Gradio (GPU 0) ──UDP 5000──┐
+                            ├──▶ Ingest ffmpeg ──▶ MediaMTX :1935 ──▶ Egress ──▶ Twitch
+MusicGen (GPU 1) ─UDP 5002──┤    (amix 3-input)     (RTMP relay)    (RTMPS copy)
+                            │
+Edge TTS ──────UDP 5004─────┘
+
+Watchdog ── monitors all components every 30s, auto-restarts on failure
+```
+
+### Quick Start
+
+See [`RUNBOOK_L40_STREAMING.md`](RUNBOOK_L40_STREAMING.md) for the full cold start sequence. TL;DR:
+
+1. Start MediaMTX → Gradio → TTS → MusicGen (wait 150s) → Ingest → Egress → Watchdog
+2. Verify with: `pgrep -f 'twitch.tv' && echo "Streaming to Twitch"`
+
+---
+
+## Historical Context
+
+This is a fork of [tensorforger/FluxRT](https://github.com/tensorforger/FluxRT), originally tuned for NVIDIA RTX 5090 GPUs on RunPod, now running on dual L40 GPUs.
+
+It is part of the [AI TV Stack](https://github.com/gschian0/ai-tv-stack-scripts) — an open-source AI television production engine.
+
+### Previous fork features (`5090-runpod` branch)
 
 - **CUDA 12.8 / Blackwell support** — PyTorch built for RTX 5090
 - **int8 quantization** — FLUX.2-Klein-4B fits in 32 GB VRAM with fast inference
