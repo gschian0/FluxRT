@@ -98,36 +98,79 @@ def _resolve_playlist_stream_url(radio_url: str) -> str:
     return radio_url
 
 
-def _extract_descriptors(wav_path: str) -> dict:
-    import librosa
+# ---------------------------------------------------------------------------
+# Creative prompt system — random starting points with smooth continuation.
+# Each session picks a random creative seed prompt, then all subsequent clips
+# use continuation conditioning (feeding previous audio back in) so the music
+# evolves smoothly and crossfades cleanly without abrupt style jumps.
+# ---------------------------------------------------------------------------
 
-    y, sr = librosa.load(wav_path, sr=None, mono=True)
-    if y.size == 0:
-        return {"tempo": 100.0, "rms": 0.01, "centroid": 1200.0}
+# Pool of creative starting prompts — randomly selected per session.
+# These give the music a distinctive, memorable character from clip #0.
+_CREATIVE_SEED_PROMPTS = [
+    "glitch jungle reggae, dub bass wobbles with chopped breakbeats, "
+    "warm sub frequencies, trippy echo delays, smooth instrumental groove",
 
-    tempo_raw, _ = librosa.beat.beat_track(y=y, sr=sr)
-    tempo = float(np.asarray(tempo_raw).reshape(-1)[0])
-    rms = float(np.sqrt(np.mean(np.square(y))))
-    centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
+    "breakbeat nat king cole alien groove, vintage jazz piano chords "
+    "meets futuristic drum breaks, silky smooth bassline, spacey synth pads",
 
-    if np.isnan(tempo):
-        tempo = 100.0
+    "deep sea dub techno, echoing chord stabs submerged in reverb, "
+    "steady four-on-the-floor kick, warm analog bass, hypnotic underwater vibe",
 
-    return {"tempo": tempo, "rms": rms, "centroid": centroid}
+    "cosmic country surf rock, twangy guitar licks over reggae bassline, "
+    "spacey spring reverb, laid-back drum shuffle, instrumental storytelling",
+
+    "afro-futurist jazz fusion, talking bass guitar, polyrhythmic drums, "
+    "floating Rhodes piano, warm brass stabs, spiritual cosmic groove",
+
+    "lo-fi hip hop bossa nova, crackly vinyl piano samples, nylon guitar, "
+    "soft boom-bap drums, warm bass, lazy afternoon cafe atmosphere",
+
+    "psychedelic dub funk, wah-wah guitar riffs, fat bassline grooves, "
+    "trippy tape echo delays, organ stabs, steady head-nodding rhythm",
+
+    "ambient space reggae, floating dub chords, deep bass pulses, "
+    "sparse percussion, cosmic synth textures, weightless groove",
+
+    "neo-soul broken beat, lush jazz chords, syncopated drum patterns, "
+    "warm bass guitar, Rhodes piano, smooth instrumental flow",
+
+    "krautrock dub voyage, motorik drum pulse, hypnotic bassline, "
+    "swirling analog synths, guitar textures, steady cosmic journey",
+]
+
+# Consistency tail — appended to every prompt to keep clips coherent.
+_CONSISTENCY_TAIL = (
+    "cohesive songform, same key throughout, "
+    "smooth instrumental mix, no vocals, no abrupt style change"
+)
+
+
+def _pick_random_seed_prompt(base_prompt: str) -> str:
+    """Pick a random creative seed prompt, or use the provided base_prompt.
+
+    If base_prompt is non-empty and doesn't look like the default, use it.
+    Otherwise pick a random creative prompt from the pool.
+    """
+    if base_prompt.strip() and base_prompt.strip() != "experimental electronic sound art for an internet installation":
+        return f"{base_prompt.strip()}, {_CONSISTENCY_TAIL}"
+    import random as _r
+    chosen = _r.choice(_CREATIVE_SEED_PROMPTS)
+    return f"{chosen}, {_CONSISTENCY_TAIL}"
+
+
+def _build_layered_prompt(base_prompt: str, cycle_index: int) -> str:
+    """Build prompt for a clip. Uses the seed prompt for all clips.
+
+    Continuation conditioning handles the evolution — the prompt stays
+    consistent so the model doesn't fight itself trying to change styles.
+    """
+    return base_prompt
 
 
 def _build_prompt(descriptors: dict, base_prompt: str) -> str:
-    tempo = int(max(60, min(160, descriptors["tempo"])))
-    intensity = "calm" if descriptors["rms"] < 0.03 else "energetic"
-    tone = "warm" if descriptors["centroid"] < 1800 else "bright"
-
-    return (
-        f"{base_prompt}, {intensity} dynamics, {tone} timbre, "
-        f"around {tempo} bpm, bassline and chords lead the track, deep fat sub bassline, "
-        f"cool minor seventh and ninth chord progression, lush warm synth pads, airy ethereal lead melodies throughout, "
-        f"light understated drums tucked behind the harmony, steady downtempo groove, dry instrumental mix, "
-        f"no vocals, no drum solo, no heavy percussion, no noise wash, no drone"
-    )
+    """Legacy compatibility — delegates to layered prompt builder."""
+    return _build_layered_prompt(base_prompt, 0)
 
 
 def _start_audio_udp_encoder(sample_rate: int, audio_udp_url: str):
@@ -282,16 +325,27 @@ def _playback_worker(
         nonlocal loop_cursor
         if loop_source.size == 0 or n <= 0:
             return np.zeros((n,), dtype=np.float32)
+        # If we have enough audio, apply a short crossfade at the loop boundary
+        # to avoid clicks/pops when wrapping around.
         out = np.empty((n,), dtype=np.float32)
         remaining = n
         pos = 0
+        fade_len = min(int(sample_rate * 0.05), loop_source.size // 4)  # 50ms crossfade
         while remaining > 0:
             tail = loop_source[loop_cursor:]
             take = min(remaining, tail.size)
             out[pos : pos + take] = tail[:take]
             pos += take
             remaining -= take
+            old_cursor = loop_cursor
             loop_cursor = (loop_cursor + take) % loop_source.size
+            # Apply crossfade when wrapping around the loop boundary
+            if loop_cursor < old_cursor and fade_len > 0 and remaining == 0:
+                # We wrapped — crossfade the end of out with the start of loop_source
+                fade_region = min(fade_len, out.shape[0])
+                fade_in = loop_source[:fade_region]
+                phase = np.linspace(0.0, 1.0, fade_region, dtype=np.float32)
+                out[-fade_region:] = out[-fade_region:] * (1.0 - phase) + fade_in * phase
         return out
 
     def _stream_clip(index: int, clip: np.ndarray):
@@ -405,7 +459,7 @@ def _playback_worker(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="MusicGen radio-driven generator")
-    parser.add_argument("--radio-url", required=True, help="Internet radio stream URL")
+    parser.add_argument("--radio-url", default="", help="Internet radio stream URL (optional, skipped if empty)")
     parser.add_argument("--output-dir", default="musicgen_output_plus_musicGEN", help="Output directory")
     parser.add_argument("--model", default="facebook/musicgen-small", help="HuggingFace model ID")
     parser.add_argument("--sample-seconds", type=int, default=8, help="Seconds to sample from radio")
@@ -425,8 +479,20 @@ def main() -> None:
     parser.add_argument(
         "--bootstrap-clips",
         type=int,
-        default=10,
+        default=20,
         help="Number of previous generated clips to preload as intro while new clips buffer",
+    )
+    parser.add_argument(
+        "--pre-generate",
+        type=int,
+        default=0,
+        help="Pre-generate N clips before starting playback to build a large buffer (prevents underruns)",
+    )
+    parser.add_argument(
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use torch.compile() on the model for faster generation (adds startup overhead)",
     )
     parser.add_argument(
         "--top-k",
@@ -469,8 +535,8 @@ def main() -> None:
     parser.add_argument(
         "--stream-delay-seconds",
         type=float,
-        default=8.0,
-        help="Buffered delay before streaming generated audio",
+        default=30.0,
+        help="Buffered delay before streaming generated audio (should be >= 2x gen_seconds)",
     )
     parser.add_argument(
         "--audio-udp-url",
@@ -480,7 +546,7 @@ def main() -> None:
     parser.add_argument(
         "--crossfade-seconds",
         type=float,
-        default=1.0,
+        default=2.0,
         help="Crossfade seconds between generated clips for seamless splicing",
     )
     parser.add_argument(
@@ -513,7 +579,9 @@ def main() -> None:
     import torch
     from transformers import AutoProcessor, MusicgenForConditionalGeneration
 
-    use_melody_conditioning = args.conditioning_mode != "text"
+    # Only chroma/hybrid modes need the melody model. Continuation works
+    # with the standard MusicGen model by feeding raw audio as the prompt.
+    use_melody_conditioning = args.conditioning_mode in ("chroma", "hybrid")
     model_id = args.model
     if use_melody_conditioning and "melody" not in model_id.lower():
         model_id = "facebook/musicgen-melody"
@@ -530,6 +598,38 @@ def main() -> None:
         model = MusicgenForConditionalGeneration.from_pretrained(model_id, torch_dtype=dtype)
     model = model.to(device)
     model.eval()
+
+    # Performance optimizations for faster generation:
+    # 1. Use SDPA (scaled dot product attention) — much faster than eager attention
+    # 2. Enable CUDA graph-friendly generation with static shapes
+    try:
+        model.config._attn_implementation = "sdpa"
+        # Re-apply with sdpa by reloading attention implementation
+        for module in model.modules():
+            if hasattr(module, 'config') and hasattr(module.config, '_attn_implementation'):
+                module.config._attn_implementation = "sdpa"
+        print("[musicgen] attention implementation: sdpa", flush=True)
+    except Exception:
+        print("[musicgen] attention implementation: default (sdpa setup failed)", flush=True)
+
+    # 2. Enable TF32 for faster matmul on Ampere+ (L40 supports it)
+    if device == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        print("[musicgen] TF32 matmul enabled", flush=True)
+
+    # 3. torch.compile() — can give 1.5-3x speedup for autoregressive generation
+    if args.compile and device == "cuda":
+        try:
+            print("[musicgen] compiling model with torch.compile() (may take 1-2 min)...", flush=True)
+            model = torch.compile(model, mode="reduce-overhead")
+            print("[musicgen] torch.compile() ready", flush=True)
+        except Exception as compile_exc:
+            print(f"[musicgen] torch.compile() failed ({compile_exc}); using eager mode", flush=True)
+
+    # Pick a random creative seed prompt for this session.
+    session_prompt = _pick_random_seed_prompt(args.base_prompt)
+    print(f"[musicgen] session prompt: {session_prompt}", flush=True)
 
     # MusicGen uses approximately 50 audio tokens per second.
     max_new_tokens = max(64, int(args.gen_seconds * 50))
@@ -550,14 +650,124 @@ def main() -> None:
     udp_proc = None
 
     if args.audio_udp_url.strip():
-        audio_queue = queue.Queue(maxsize=32)
+        audio_queue = queue.Queue(maxsize=64)
         udp_proc = _start_audio_udp_encoder(sample_rate, args.audio_udp_url.strip())
+        # Load ALL existing clips as bootstrap — this gives us a huge buffer
+        # from previous runs so playback can run for minutes before first underrun.
         bootstrap_clips = _load_bootstrap_clips(
             out_dir=out_dir,
             max_clips=max(0, int(args.bootstrap_clips)),
             sample_rate=sample_rate,
             sf_module=sf,
         )
+        bootstrap_seconds = sum(c.shape[0] / sample_rate for c in bootstrap_clips)
+        print(
+            f"[musicgen] bootstrap: {len(bootstrap_clips)} clips ({bootstrap_seconds:.1f}s) loaded from {out_dir}",
+            flush=True,
+        )
+
+    print(
+        f"[musicgen] device={device} model={args.model} out={out_dir} "
+        f"gen(top_k={top_k}, top_p={top_p}, temperature={temperature}, guidance_scale={guidance_scale}, "
+        f"parallel_clips={parallel_clips}, seed={seed_base})"
+    )
+    resolved_radio_url = ""
+    if args.radio_url.strip():
+        resolved_radio_url = _resolve_playlist_stream_url(args.radio_url)
+        if resolved_radio_url != args.radio_url:
+            print(f"[musicgen] resolved playlist URL -> {resolved_radio_url}")
+    else:
+        print("[musicgen] no radio URL provided — using layered prompt mode (no radio sampling)")
+
+    # --- Pre-generation phase: build a large buffer before starting playback ---
+    # This is critical: with RTF ~2.5x, we need a big buffer to survive underruns.
+    # Pre-generating N clips means the playback worker has N*gen_seconds of audio
+    # queued before it even starts streaming.
+    pre_gen_clips: list[np.ndarray] = []
+    pre_gen_previous_audio: np.ndarray | None = None
+
+    if args.pre_generate > 0 and audio_queue is not None:
+        print(f"[musicgen] pre-generating {args.pre_generate} clips before starting playback...", flush=True)
+        for pg_idx in range(args.pre_generate):
+            pg_prompt = _build_layered_prompt(session_prompt, pg_idx)
+            pg_batch_prompts = [pg_prompt for _ in range(parallel_clips)]
+            pg_seed = seed_base + pg_idx
+            torch.manual_seed(pg_seed)
+            if device == "cuda":
+                torch.cuda.manual_seed_all(pg_seed)
+
+            if pre_gen_previous_audio is not None and args.conditioning_mode in ("continuation", "hybrid"):
+                pg_cond_batch = [pre_gen_previous_audio for _ in range(parallel_clips)]
+                pg_inputs = processor(
+                    text=pg_batch_prompts,
+                    audio=pg_cond_batch,
+                    sampling_rate=sample_rate,
+                    padding=True,
+                    return_tensors="pt",
+                )
+            else:
+                pg_inputs = processor(text=pg_batch_prompts, padding=True, return_tensors="pt")
+            pg_inputs = {k: v.to(device) for k, v in pg_inputs.items()}
+
+            pg_t0 = time.monotonic()
+            with torch.no_grad():
+                if device == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.float16):
+                        pg_generated = model.generate(
+                            **pg_inputs,
+                            do_sample=True,
+                            top_k=top_k,
+                            top_p=top_p,
+                            temperature=temperature,
+                            guidance_scale=guidance_scale,
+                            max_new_tokens=max_new_tokens,
+                        )
+                else:
+                    pg_generated = model.generate(
+                        **pg_inputs,
+                        do_sample=True,
+                        top_k=top_k,
+                        top_p=top_p,
+                        temperature=temperature,
+                        guidance_scale=guidance_scale,
+                        max_new_tokens=max_new_tokens,
+                    )
+            pg_wall = time.monotonic() - pg_t0
+            pg_batch_size = int(pg_generated.shape[0]) if hasattr(pg_generated, "shape") else parallel_clips
+            print(
+                f"[musicgen] pre-gen clip {pg_idx+1}/{args.pre_generate} "
+                f"({pg_batch_size * args.gen_seconds:.1f}s in {pg_wall:.1f}s, RTF={pg_wall / (pg_batch_size * args.gen_seconds):.2f})",
+                flush=True,
+            )
+            for bp in range(pg_batch_size):
+                pg_audio = pg_generated[bp].detach().cpu().numpy()
+                if pg_audio.ndim == 2 and pg_audio.shape[0] <= 8:
+                    pg_audio = pg_audio.T
+                if pg_audio.ndim == 1:
+                    pg_audio = np.expand_dims(pg_audio, axis=1)
+                pg_audio = pg_audio.astype(np.float32, copy=False)
+                pg_mono = pg_audio.mean(axis=1) if pg_audio.ndim == 2 else pg_audio.squeeze()
+                if pg_mono.ndim == 0:
+                    pg_mono = np.array([float(pg_mono)], dtype=np.float32)
+                pg_mono = pg_mono.astype(np.float32, copy=False)
+                pre_gen_previous_audio = pg_mono[-int(max(1.0, float(args.conditioning_seconds)) * sample_rate) :].copy()
+                pre_gen_clips.append(np.clip(pg_mono, -0.98, 0.98))
+
+        # Write pre-gen clips to disk so they become bootstrap for future runs
+        for pg_idx, pg_clip in enumerate(pre_gen_clips):
+            clip_path = out_dir / f"musicgen_clip_{pg_idx:06d}.wav"
+            sf.write(str(clip_path), pg_clip.reshape(-1, 1), sample_rate)
+
+        pre_gen_seconds = sum(c.shape[0] / sample_rate for c in pre_gen_clips)
+        print(f"[musicgen] pre-generation complete: {len(pre_gen_clips)} clips ({pre_gen_seconds:.1f}s)", flush=True)
+
+        # Add pre-gen clips to bootstrap so playback worker uses them
+        bootstrap_clips = (bootstrap_clips or []) + pre_gen_clips
+        bootstrap_seconds = sum(c.shape[0] / sample_rate for c in bootstrap_clips)
+        print(f"[musicgen] total bootstrap buffer: {len(bootstrap_clips)} clips ({bootstrap_seconds:.1f}s)", flush=True)
+
+    # Start playback thread AFTER pre-generation so the buffer is ready
+    if args.audio_udp_url.strip():
         playback_thread = threading.Thread(
             target=_playback_worker,
             args=(
@@ -575,24 +785,18 @@ def main() -> None:
         playback_thread.start()
         print(
             f"[musicgen] audio stream -> {args.audio_udp_url} "
-            f"(delay={args.stream_delay_seconds}s, bootstrap_clips={len(bootstrap_clips)})"
+            f"(delay={args.stream_delay_seconds}s, bootstrap={len(bootstrap_clips)} clips / {bootstrap_seconds:.1f}s)",
+            flush=True,
         )
-
-    print(
-        f"[musicgen] device={device} model={args.model} out={out_dir} "
-        f"gen(top_k={top_k}, top_p={top_p}, temperature={temperature}, guidance_scale={guidance_scale}, "
-        f"parallel_clips={parallel_clips}, seed={seed_base})"
-    )
-    resolved_radio_url = _resolve_playlist_stream_url(args.radio_url)
-    if resolved_radio_url != args.radio_url:
-        print(f"[musicgen] resolved playlist URL -> {resolved_radio_url}")
 
     def _generation_loop() -> None:
         current_top_k = top_k
         current_top_p = top_p
         current_temperature = temperature
         current_guidance_scale = guidance_scale
-        previous_generated_audio: np.ndarray | None = None
+        # Use pre-gen audio as continuation seed so the live stream picks up
+        # smoothly from where pre-generation left off.
+        previous_generated_audio = pre_gen_previous_audio if pre_gen_previous_audio is not None else None
 
         def _walk_params() -> tuple[int, float, float, float]:
             nonlocal current_top_k, current_top_p, current_temperature, current_guidance_scale
@@ -613,27 +817,36 @@ def main() -> None:
                 round(float(current_guidance_scale), 3),
             )
 
-        index = 0
+        index = len(pre_gen_clips) if pre_gen_clips else 0
         while True:
             try:
                 with tempfile.TemporaryDirectory(prefix="musicgen_radio_") as tmpdir:
                     radio_wav = os.path.join(tmpdir, "radio.wav")
                     radio_sample_ok = False
-                    try:
-                        _sample_radio_to_wav(resolved_radio_url, radio_wav, args.sample_seconds, args.sample_rate)
-                        descriptors = _extract_descriptors(radio_wav)
-                        radio_sample_ok = True
-                    except Exception as sample_exc:
+
+                    # Skip radio sampling entirely if no URL provided — saves
+                    # ~5-10s per cycle of ffmpeg + librosa overhead.
+                    if resolved_radio_url:
+                        try:
+                            _sample_radio_to_wav(resolved_radio_url, radio_wav, args.sample_seconds, args.sample_rate)
+                            descriptors = _extract_descriptors(radio_wav)
+                            radio_sample_ok = True
+                        except Exception as sample_exc:
+                            descriptors = {"tempo": 92.0, "rms": 0.04, "centroid": 1400.0}
+                            print(
+                                f"[musicgen] radio sample unavailable "
+                                f"({type(sample_exc).__name__}: {sample_exc}); using prompt-only generation",
+                                flush=True,
+                            )
+                    else:
                         descriptors = {"tempo": 92.0, "rms": 0.04, "centroid": 1400.0}
-                        print(
-                            f"[musicgen] radio sample unavailable "
-                            f"({type(sample_exc).__name__}: {sample_exc}); using prompt-only generation",
-                            flush=True,
-                        )
-                    prompt = _build_prompt(descriptors, args.base_prompt)
+
+                    # Use the session prompt for all clips — continuation
+                    # conditioning handles evolution, prompt stays consistent.
+                    prompt = _build_layered_prompt(session_prompt, index)
                     batch_top_k, batch_top_p, batch_temperature, batch_guidance_scale = _walk_params()
                     print(
-                        f"[musicgen] params top_k={batch_top_k} top_p={batch_top_p:.3f} "
+                        f"[musicgen] clip #{index} params top_k={batch_top_k} top_p={batch_top_p:.3f} "
                         f"temperature={batch_temperature:.3f} guidance_scale={batch_guidance_scale:.3f}",
                         flush=True,
                     )
@@ -653,7 +866,19 @@ def main() -> None:
                         )
                         conditioning_source = "radio_chroma" if conditioning_audio is not None else "text"
 
-                    if use_melody_conditioning and conditioning_audio is not None:
+                    # Build inputs — continuation mode feeds raw audio to the
+                    # standard MusicGen model via the processor's audio param.
+                    if conditioning_audio is not None and not use_melody_conditioning:
+                        # Standard MusicGen continuation: pass audio as raw waveform
+                        conditioning_batch = [conditioning_audio for _ in range(parallel_clips)]
+                        inputs = processor(
+                            text=batch_prompts,
+                            audio=conditioning_batch,
+                            sampling_rate=sample_rate,
+                            padding=True,
+                            return_tensors="pt",
+                        )
+                    elif use_melody_conditioning and conditioning_audio is not None:
                         conditioning_batch = [conditioning_audio for _ in range(parallel_clips)]
                         inputs = processor(
                             text=batch_prompts,

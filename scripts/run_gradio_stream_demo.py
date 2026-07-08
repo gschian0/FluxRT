@@ -2935,9 +2935,13 @@ def main():
     if enable_queue:
         app = demo.queue(default_concurrency_limit=8)
 
+    # Enable Gradio share tunnel if requested (creates a public URL)
+    share_tunnel = os.getenv("GRADIO_SHARE", "0") == "1"
+
     app.launch(
         server_name=args.server_name,
         server_port=args.server_port,
+        share=share_tunnel,
         css=APP_CSS,
     )
 
