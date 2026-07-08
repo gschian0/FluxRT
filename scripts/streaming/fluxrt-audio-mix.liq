@@ -1,6 +1,8 @@
 #!/usr/bin/liquidsoap
 # FluxRT flat audio mix — values injected by start_liquidsoap_audio_mix.sh
 
+settings.init.allow_root.set(true)
+
 music_vol = @MUSIC_VOL@
 tts_vol = @TTS_VOL@
 audio_bitrate = "@AUDIO_BITRATE@"
