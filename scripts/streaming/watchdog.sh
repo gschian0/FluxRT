@@ -10,7 +10,7 @@ set -u
 LOG="/tmp/fluxrt-watchdog.log"
 RESTART_COUNT=0
 MUSICGEN_START_TIME=0
-MUSICGEN_GRACE_PERIOD=180  # 3 minutes: model load + pre-gen + bootstrap
+MUSICGEN_GRACE_PERIOD=360  # 6 minutes: model load (~30s) + pre-gen 10 clips (~200s) + buffer
 
 log() {
     echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"
@@ -52,7 +52,7 @@ restart_ingest() {
         -thread_queue_size 16384 -i "udp://127.0.0.1:5002?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1" \
         -thread_queue_size 16384 -i "udp://127.0.0.1:5004?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1" \
         -map 0:v:0 -map "[aout]" \
-        -filter_complex "[1:a]volume=1.0[base];[2:a]volume=1.0[music];[3:a]volume=0.85[tts];[base][music][tts]amix=inputs=3:duration=longest:dropout_transition=0:normalize=0,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]" \
+        -filter_complex "[1:a]volume=1.0[base];[2:a]volume=1.3[music];[3:a]volume=0.85[tts];[base][music][tts]amix=inputs=3:duration=longest:dropout_transition=0:normalize=0,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]" \
         -c:v copy -c:a aac -b:a 96k -ar 48000 -ac 2 \
         -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
         -f flv "rtmp://127.0.0.1:1935/fluxrt" \
@@ -83,13 +83,13 @@ restart_musicgen() {
     cd /workspace/FluxRT
     CUDA_VISIBLE_DEVICES=1 nohup setsid taskset -c 16-63 \
         /workspace/FluxRT/.venv/bin/python3 -u scripts/run_musicgen_radio_plus_musicGEN.py \
-        --radio-url "" \
+        --radio-url "https://ice64.securenetsystems.net/LFTM" \
         --output-dir /dev/shm/musicgen \
         --model facebook/musicgen-small \
-        --gen-seconds 8 \
+        --gen-seconds 16 \
         --top-k 250 --top-p 0.95 --temperature 1.0 --guidance-scale 3.0 \
         --no-drunk-walk --parallel-clips 2 --seed -1 \
-        --bootstrap-clips 54 --pre-generate 10 \
+        --bootstrap-clips 24 --pre-generate 10 --bpm 120 \
         --pause-seconds 0 --base-prompt "" \
         --conditioning-mode continuation --conditioning-seconds 8 \
         --stream-delay-seconds 120 \
@@ -210,6 +210,14 @@ check_video_source() {
     fi
     return 0
 }
+
+# If MusicGen is already running when watchdog starts, set grace timer to now
+# so we don't immediately kill it (MUSICGEN_START_TIME defaults to 0 which makes
+# uptime = epoch time, bypassing the grace period check).
+if pgrep -f "run_musicgen_radio" >/dev/null 2>&1; then
+    MUSICGEN_START_TIME=$(date +%s)
+    log "MusicGen already running — grace timer set to now (${MUSICGEN_START_TIME})"
+fi
 
 log "=== FluxRT Pipeline Watchdog Started ==="
 log "Monitoring: MediaMTX, Ingest, Egress, MusicGen, TTS, Gradio"

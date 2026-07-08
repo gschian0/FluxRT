@@ -98,6 +98,24 @@ def _resolve_playlist_stream_url(radio_url: str) -> str:
     return radio_url
 
 
+def _extract_descriptors(wav_path: str) -> dict:
+    """Extract tempo, RMS energy, and spectral centroid from a WAV file using librosa."""
+    import librosa
+
+    y, sr = librosa.load(wav_path, sr=None, mono=True)
+    if y.size == 0:
+        return {"tempo": 100.0, "rms": 0.01, "centroid": 1200.0}
+
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    rms = float(np.sqrt(np.mean(np.square(y))))
+    centroid = float(np.mean(librosa.feature.spectral_centroid(y=y, sr=sr)))
+
+    if np.isnan(tempo):
+        tempo = 100.0
+
+    return {"tempo": float(tempo), "rms": rms, "centroid": centroid}
+
+
 # ---------------------------------------------------------------------------
 # Creative prompt system — random starting points with smooth continuation.
 # Each session picks a random creative seed prompt, then all subsequent clips
@@ -145,26 +163,44 @@ _CONSISTENCY_TAIL = (
     "smooth instrumental mix, no vocals, no abrupt style change"
 )
 
+# Default BPM for generation — evenly divisible, easy to work with.
+_DEFAULT_BPM = 120
 
-def _pick_random_seed_prompt(base_prompt: str) -> str:
+# How many clips before rotating to a new seed prompt (faster evolution).
+_SEED_ROTATION_INTERVAL = 4
+
+
+def _pick_random_seed_prompt(base_prompt: str, bpm: int = _DEFAULT_BPM) -> str:
     """Pick a random creative seed prompt, or use the provided base_prompt.
 
     If base_prompt is non-empty and doesn't look like the default, use it.
     Otherwise pick a random creative prompt from the pool.
+    BPM is always included so generation length aligns with tempo.
     """
+    bpm_str = f"{bpm} BPM"
     if base_prompt.strip() and base_prompt.strip() != "experimental electronic sound art for an internet installation":
-        return f"{base_prompt.strip()}, {_CONSISTENCY_TAIL}"
+        return f"{base_prompt.strip()}, {bpm_str}, {_CONSISTENCY_TAIL}"
     import random as _r
     chosen = _r.choice(_CREATIVE_SEED_PROMPTS)
-    return f"{chosen}, {_CONSISTENCY_TAIL}"
+    return f"{chosen}, {bpm_str}, {_CONSISTENCY_TAIL}"
 
 
-def _build_layered_prompt(base_prompt: str, cycle_index: int) -> str:
-    """Build prompt for a clip. Uses the seed prompt for all clips.
+def _build_layered_prompt(base_prompt: str, cycle_index: int, bpm: int = _DEFAULT_BPM) -> str:
+    """Build prompt for a clip.
 
-    Continuation conditioning handles the evolution — the prompt stays
-    consistent so the model doesn't fight itself trying to change styles.
+    Rotates to a new seed prompt every _SEED_ROTATION_INTERVAL clips so the
+    music evolves faster while continuation conditioning keeps transitions smooth.
+    BPM is always included so generation length aligns with tempo.
     """
+    # Every N clips, pick a fresh seed prompt for faster evolution
+    rotation = cycle_index // _SEED_ROTATION_INTERVAL
+    if rotation > 0:
+        import random as _r
+        # Use deterministic seed based on rotation index for reproducibility
+        _r.seed(rotation * 1000)
+        chosen = _r.choice(_CREATIVE_SEED_PROMPTS)
+        bpm_str = f"{bpm} BPM"
+        return f"{chosen}, {bpm_str}, {_CONSISTENCY_TAIL}"
     return base_prompt
 
 
@@ -577,6 +613,12 @@ def main() -> None:
         help="Prompt seed for generation",
     )
     parser.add_argument(
+        "--bpm",
+        type=int,
+        default=_DEFAULT_BPM,
+        help="BPM to include in prompts so generation length aligns with tempo (default 120)",
+    )
+    parser.add_argument(
         "--conditioning-mode",
         choices=("text", "chroma", "continuation", "hybrid"),
         default="text",
@@ -650,7 +692,7 @@ def main() -> None:
             print(f"[musicgen] torch.compile() failed ({compile_exc}); using eager mode", flush=True)
 
     # Pick a random creative seed prompt for this session.
-    session_prompt = _pick_random_seed_prompt(args.base_prompt)
+    session_prompt = _pick_random_seed_prompt(args.base_prompt, args.bpm)
     print(f"[musicgen] session prompt: {session_prompt}", flush=True)
 
     # MusicGen uses approximately 50 audio tokens per second.
@@ -711,7 +753,7 @@ def main() -> None:
     if args.pre_generate > 0 and audio_queue is not None:
         print(f"[musicgen] pre-generating {args.pre_generate} clips before starting playback...", flush=True)
         for pg_idx in range(args.pre_generate):
-            pg_prompt = _build_layered_prompt(session_prompt, pg_idx)
+            pg_prompt = _build_layered_prompt(session_prompt, pg_idx, args.bpm)
             pg_batch_prompts = [pg_prompt for _ in range(parallel_clips)]
             pg_seed = seed_base + pg_idx
             torch.manual_seed(pg_seed)
@@ -866,7 +908,7 @@ def main() -> None:
 
                     # Use the session prompt for all clips — continuation
                     # conditioning handles evolution, prompt stays consistent.
-                    prompt = _build_layered_prompt(session_prompt, index)
+                    prompt = _build_layered_prompt(session_prompt, index, args.bpm)
                     batch_top_k, batch_top_p, batch_temperature, batch_guidance_scale = _walk_params()
                     print(
                         f"[musicgen] clip #{index} params top_k={batch_top_k} top_p={batch_top_p:.3f} "
