@@ -929,18 +929,33 @@ def add_tv_overlay(frame_bgr: np.ndarray) -> np.ndarray:
         ticker_h = max(18, int(28 * scale))
         ticker_y1 = max(2, bar_y1 - ticker_h - 2)
         ticker_y2 = bar_y1 - 2
-        cv2.rectangle(out, (margin, ticker_y1), (w - margin, ticker_y2), (10, 10, 30), -1)
-        # Scroll the text horizontally
+        ticker_x1 = margin
+        ticker_x2 = w - margin
+        cv2.rectangle(out, (ticker_x1, ticker_y1), (ticker_x2, ticker_y2), (10, 10, 30), -1)
+        # Scroll the text horizontally — start off-screen right, scroll all the way to off-screen left
         text_w = cv2.getTextSize(ticker_text, cv2.FONT_HERSHEY_SIMPLEX, ticker_font, 1)[0][0]
-        scroll_range = max(1, text_w + w)
+        # Total travel distance: from fully off-screen right to fully off-screen left
+        scroll_range = max(1, text_w + (ticker_x2 - ticker_x1))
         _ticker_scroll_offset = (_ticker_scroll_offset + max(1.0, 1.5 * scale)) % scroll_range
-        start_x = w - margin - int(_ticker_scroll_offset)
-        if start_x + text_w < margin:
+        # Text starts at right edge of bar + text width (off-screen), scrolls left
+        start_x = ticker_x2 + text_w - int(_ticker_scroll_offset)
+        # Reset when text has fully scrolled off the left edge
+        if start_x + text_w < ticker_x1:
             _ticker_scroll_offset = 0.0
-            start_x = w - margin
-        # Clip drawing to ticker area
+            start_x = ticker_x2 + text_w
+        # Clip drawing to ticker area using ROI
         ticker_y_text = ticker_y2 - max(4, int(8 * scale))
-        cv2.putText(out, ticker_text, (start_x, ticker_y_text), cv2.FONT_HERSHEY_SIMPLEX, ticker_font, (180, 220, 255), 1)
+        clip_x1 = max(0, ticker_x1)
+        clip_x2 = min(w, ticker_x2)
+        clip_y1 = max(0, ticker_y1)
+        clip_y2 = min(h, ticker_y2)
+        if clip_x2 > clip_x1 and clip_y2 > clip_y1:
+            # Draw text on a temp strip, then copy only the clipped region
+            temp = np.zeros((clip_y2 - clip_y1, w, 3), dtype=out.dtype)
+            temp_x = start_x
+            temp_y = ticker_y_text - clip_y1
+            cv2.putText(temp, ticker_text, (temp_x, temp_y), cv2.FONT_HERSHEY_SIMPLEX, ticker_font, (180, 220, 255), 1)
+            out[clip_y1:clip_y2, clip_x1:clip_x2] = temp[0:clip_y2 - clip_y1, clip_x1:clip_x2]
 
     current_time_str = time.strftime("%H:%M:%S")
     tw, th = cv2.getTextSize(current_time_str, cv2.FONT_HERSHEY_SIMPLEX, clock_font, text_thickness)[0]
