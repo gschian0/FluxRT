@@ -184,7 +184,7 @@ def _is_music_stream_running() -> bool:
 def _is_quote_voice_running() -> bool:
     if _quote_tts_is_running():
         return True
-    return _is_process_running("run_quote_tts_from_json.py")
+    return _is_process_running("run_quote_tts_from_json.py") or _is_process_running("run_edge_tts_quotes.py")
 
 
 def _is_sfx_stream_running() -> bool:
@@ -834,7 +834,11 @@ def _load_ticker_quotes() -> list[str]:
     try:
         import json
         import os
-        quotes_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "quotes", "diffusiongemma_quotes.json")
+        # Prefer Gemini quotes, fall back to diffusiongemma for backward compat
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        gemini_path = os.path.join(repo_root, "data", "quotes", "gemini_quotes.json")
+        diffusion_path = os.path.join(repo_root, "data", "quotes", "diffusiongemma_quotes.json")
+        quotes_path = gemini_path if os.path.exists(gemini_path) else diffusion_path
         if os.path.exists(quotes_path):
             with open(quotes_path, "r") as f:
                 data = json.load(f)
@@ -1475,6 +1479,7 @@ def stop_quote_voice_stream():
             "bash",
             "-lc",
             "pkill -f 'run_quote_tts_from_json.py' || true; "
+            "pkill -f 'run_edge_tts_quotes.py' || true; "
             "pkill -f 'ffmpeg.*udp://127.0.0.1:5004' || true",
         ],
         capture_output=True,
@@ -1495,13 +1500,13 @@ def stop_all_stream_workers():
 
 def generate_quote_data_inline(count: int, output_path: str):
     count = max(1, int(count))
-    output_path = (output_path or "data/quotes/diffusiongemma_quotes.json").strip()
+    output_path = (output_path or "data/quotes/gemini_quotes.json").strip()
     cmd = [
         "bash",
         "-lc",
         (
             "cd /workspace/FluxRT && "
-            f"uv run python scripts/generate_quote_data_diffusiongemma.py --count {count} --output '{output_path}'"
+            f"python3 scripts/generate_quote_data_gemini.py --count {count} --output '{output_path}'"
         ),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -1522,23 +1527,24 @@ def start_quote_voice_stream(
     loop_quotes: bool,
     reverb_enabled: bool,
     echo_enabled: bool,
+    live_gemini: bool = False,
 ):
     global quote_tts_proc
 
-    quote_json_path = (quote_json_path or "data/quotes/diffusiongemma_quotes.json").strip()
+    quote_json_path = (quote_json_path or "data/quotes/gemini_quotes.json").strip()
     if not quote_json_path:
         return "quote voice: quote path required"
 
     if _quote_tts_is_running():
         return "quote voice: already running"
 
+    # Use edge TTS (free, no API key) with optional live Gemini auto-refresh
     cmd_parts = [
         "cd /workspace/FluxRT &&",
-        "uv run python -u scripts/run_quote_tts_from_json.py",
+        "python3 -u scripts/run_edge_tts_quotes.py",
         f"--quotes '{quote_json_path}'",
-        f"--voice '{voice_name}'",
         f"--interval {max(0.0, float(interval_seconds))}",
-        "--silence 0.25",
+        "--random-voices",
         "--udp-url 'udp://127.0.0.1:5004?pkt_size=1316'",
     ]
     if not include_author:
@@ -1547,25 +1553,24 @@ def start_quote_voice_stream(
         cmd_parts.append("--shuffle")
     if loop_quotes:
         cmd_parts.append("--loop")
-    # Always auto-refresh so process never exits and kills UDP 5004.
-    # refresh-threshold=10 starts generating while 10 quotes remain (buys time).
-    # repeat-on-empty is the failsafe if generation is slow or fails.
-    cmd_parts.append("--auto-refresh")
-    cmd_parts.append("--refresh-threshold 10")
-    cmd_parts.append("--refresh-count 50")
     cmd_parts.append("--repeat-on-empty")
-    cmd_parts.append("--cache-dir voices/quote_cache")
+    cmd_parts.append("--cache-dir voices/quote_cache_edge")
     cmd_parts.append("--cache-size 4")
     if reverb_enabled:
         cmd_parts.append("--reverb")
-        cmd_parts.append("--reverb-mix 0.18")
-        cmd_parts.append("--reverb-decay 0.35")
-        cmd_parts.append("--reverb-delay-ms 45")
+        cmd_parts.append("--reverb-mix 0.35")
+        cmd_parts.append("--reverb-decay 0.50")
+        cmd_parts.append("--reverb-delay-ms 60")
     if echo_enabled:
-        cmd_parts.append("--last-word-echo")
-        cmd_parts.append("--echo-mix 0.28")
-        cmd_parts.append("--echo-decay 0.55")
-        cmd_parts.append("--echo-delay-ms 120")
+        cmd_parts.append("--echo")
+        cmd_parts.append("--echo-mix 0.45")
+        cmd_parts.append("--echo-decay 0.65")
+        cmd_parts.append("--echo-delay-ms 150")
+    if live_gemini:
+        cmd_parts.append("--live-gemini")
+        cmd_parts.append("--gemini-refresh-threshold 5")
+        cmd_parts.append("--gemini-refresh-count 10")
+        cmd_parts.append("--gemini-timeout 30")
 
     full_cmd = " ".join(cmd_parts)
     try:
@@ -1576,8 +1581,9 @@ def start_quote_voice_stream(
         set_status(f"quote voice failed: {msg}")
         return f"quote voice failed: {msg}"
 
-    set_status("quote voice started (udp mix on 5004)")
-    return "quote voice started (udp mix on 5004)"
+    mode = "live Gemini" if live_gemini else "static"
+    set_status(f"quote voice started ({mode}, udp mix on 5004)")
+    return f"quote voice started ({mode}, udp mix on 5004)"
 
 
 def _musicgen_output_dirs() -> list[str]:
@@ -2533,7 +2539,7 @@ def main():
                         with gr.Row():
                             quote_json_path = gr.Textbox(
                                 label="Quote JSON Path",
-                                value="data/quotes/diffusiongemma_quotes.json",
+                                value="data/quotes/gemini_quotes.json",
                                 lines=1,
                             )
                             quote_voice = gr.Dropdown(
@@ -2561,9 +2567,10 @@ def main():
                         with gr.Row():
                             quote_include_author = gr.Checkbox(value=False, label="Speak Author")
                             quote_shuffle = gr.Checkbox(value=True, label="Shuffle")
-                            quote_loop = gr.Checkbox(value=False, label="Loop")
+                            quote_loop = gr.Checkbox(value=True, label="Loop")
                             quote_reverb = gr.Checkbox(value=True, label="Reverb")
                             quote_echo = gr.Checkbox(value=True, label="Last-Word Echo")
+                            quote_live_gemini = gr.Checkbox(value=True, label="Live Gemini", info="Auto-generate fresh quotes via Gemini 2.5 Flash")
                         with gr.Row():
                             quote_generate_btn = gr.Button("Generate Quote Data")
                             quote_start_btn = gr.Button("Start Quote Voice", variant="primary")
@@ -2847,6 +2854,7 @@ def main():
                 quote_loop,
                 quote_reverb,
                 quote_echo,
+                quote_live_gemini,
             ],
             outputs=[quote_status],
         )

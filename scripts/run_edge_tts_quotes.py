@@ -22,10 +22,16 @@ import sys
 import time
 import wave
 from array import array
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import edge_tts
+
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None
 
 # All available en-US Neural voices for random switching
 ALL_VOICES = [
@@ -47,6 +53,143 @@ ALL_VOICES = [
     "en-US-RogerNeural",
     "en-US-SteffanNeural",
 ]
+
+
+# ─── Live Gemini quote generation ───────────────────────────────────────────
+# When --live-gemini is enabled, the streamer generates fresh quotes on-the-fly
+# using Google Gemini 2.5 Flash (thinkingBudget=0 for speed).  This replaces the
+# old NVIDIA diffusiongemma endpoint and gives an infinite supply of quotes.
+
+_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+_GEMINI_MODEL = "gemini-2.5-flash"
+
+_GEMINI_PHILOSOPHERS = [
+    "Socrates", "Plato", "Aristotle", "Epictetus", "Marcus Aurelius",
+    "Seneca", "Confucius", "Laozi", "Nietzsche", "Kierkegaard", "Emerson",
+]
+_GEMINI_TOPICS = [
+    "patience", "time", "discipline", "attention", "change",
+    "hope", "silence", "memory", "fear", "craft",
+]
+_GEMINI_FORMS = [
+    "paradox", "gentle warning", "hard-earned lesson",
+    "koan-like reflection", "concrete metaphor", "calm imperative",
+]
+_GEMINI_MOODS = [
+    "stoic", "lucid", "tender", "austere", "curious", "serene",
+]
+
+
+def _load_env_for_gemini() -> str:
+    """Load GEMINI_API_KEY from .env files if not already in env."""
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if key:
+        return key
+    for env_path in [
+        Path(__file__).resolve().parent.parent / ".env",
+        Path("/workspace/AI_TV_ORCHESTRATION/.env"),
+    ]:
+        if not env_path.is_file():
+            continue
+        for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if line.startswith("GEMINI_API_KEY="):
+                key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if key:
+                    os.environ["GEMINI_API_KEY"] = key
+                    return key
+    return ""
+
+
+def generate_gemini_quotes(count: int = 10, timeout: int = 30) -> list[dict]:
+    """Generate *count* philosophical quotes via Gemini 2.5 Flash (single API call)."""
+    if _requests is None:
+        raise RuntimeError("requests library not installed — cannot use live Gemini")
+    api_key = _load_env_for_gemini()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not found — set it in .env")
+
+    count = max(1, min(count, 20))  # cap at 20 per call for reliability
+    assignments = []
+    for _ in range(count):
+        assignments.append({
+            "philosopher": random.choice(_GEMINI_PHILOSOPHERS),
+            "topic": random.choice(_GEMINI_TOPICS),
+            "form": random.choice(_GEMINI_FORMS),
+            "mood": random.choice(_GEMINI_MOODS),
+        })
+
+    prompt_lines = [
+        f"Generate exactly {count} short original philosophical quotes. "
+        "Each quote should be under 24 words and sound like a real aphorism — "
+        "no intro, no numbering, no quotation marks.",
+        "",
+        "For each quote, use the following tone/topic/form/mood assignments:",
+        "",
+    ]
+    for i, a in enumerate(assignments):
+        prompt_lines.append(
+            f"Quote {i + 1}: philosopher={a['philosopher']}, "
+            f"topic={a['topic']}, form={a['form']}, mood={a['mood']}"
+        )
+    prompt_lines.extend([
+        "",
+        "Respond with ONLY a valid JSON array. No markdown, no code fences, no explanation. "
+        'Each element must be an object with exactly these fields:\n'
+        '  {"quote": "the quote text", "philosopher": "name", "topic": "topic", '
+        '"form": "form", "mood": "mood"}',
+        "",
+        f"Return exactly {count} objects in the array.",
+    ])
+    prompt = "\n".join(prompt_lines)
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": 8192,
+            "temperature": 1.0,
+            "topP": 0.95,
+            "responseMimeType": "application/json",
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
+    }
+
+    url = _GEMINI_URL.format(model=_GEMINI_MODEL)
+    resp = _requests.post(url, params={"key": api_key}, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    raw = data["candidates"][0]["content"]["parts"][0]["text"]
+
+    # Parse JSON array from response
+    text = raw.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    start, end = text.find("["), text.rfind("]")
+    if start == -1 or end == -1:
+        raise ValueError(f"No JSON array in Gemini response: {text[:200]}")
+    items = json.loads(text[start:end + 1])
+
+    results = []
+    for i, item in enumerate(items):
+        quote_text = str(item.get("quote", "")).strip().strip('"\'')
+        quote_text = re.sub(r"^[-*\d\.)\s]+", "", quote_text)
+        if not quote_text:
+            continue
+        a = assignments[i] if i < len(assignments) else {}
+        results.append({
+            "quote": quote_text,
+            "philosopher": item.get("philosopher", a.get("philosopher", "Unknown")),
+            "topic": item.get("topic", a.get("topic", "unknown")),
+            "form": item.get("form", a.get("form", "unknown")),
+            "mood": item.get("mood", a.get("mood", "unknown")),
+            "model": _GEMINI_MODEL,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        })
+    return results
 
 
 def load_quotes(path: Path) -> list[dict]:
@@ -335,6 +478,10 @@ class QuoteCache:
         echo_decay: float,
         echo_delay_ms: int,
         target_size: int = 4,
+        live_gemini: bool = False,
+        gemini_refresh_threshold: int = 5,
+        gemini_refresh_count: int = 10,
+        gemini_timeout: int = 30,
     ):
         self._quotes = quotes
         self._cache_dir = cache_dir
@@ -359,6 +506,14 @@ class QuoteCache:
         self._index = 0
         self._cache_index = 0
         self._load_existing_cache()
+
+        # Live Gemini auto-refresh state
+        self._live_gemini = live_gemini
+        self._gemini_refresh_threshold = gemini_refresh_threshold
+        self._gemini_refresh_count = gemini_refresh_count
+        self._gemini_timeout = gemini_timeout
+        self._gemini_refreshing = False
+        self._spoken_indices = 0  # how many quotes have been dispatched from the original pool
 
     def _load_existing_cache(self) -> None:
         existing = sorted(self._cache_dir.glob("quote_*.wav"))
@@ -392,14 +547,46 @@ class QuoteCache:
             return None
         return (cache_path, voice)
 
+    def _maybe_refresh_gemini(self) -> None:
+        """Check if we need to generate fresh quotes via Gemini and do it synchronously."""
+        if not self._live_gemini or self._gemini_refreshing:
+            return
+        remaining = len(self._quotes) - self._spoken_indices
+        if remaining > self._gemini_refresh_threshold:
+            return
+        self._gemini_refreshing = True
+        try:
+            print(f"[gemini] Pool low ({remaining} left) — generating {self._gemini_refresh_count} fresh quotes...", flush=True)
+            new_quotes = generate_gemini_quotes(
+                count=self._gemini_refresh_count,
+                timeout=self._gemini_timeout,
+            )
+            if new_quotes:
+                self._quotes.extend(new_quotes)
+                print(f"[gemini] Added {len(new_quotes)} fresh quotes — pool now {len(self._quotes)} total", flush=True)
+                for q in new_quotes:
+                    print(f"  [gemini] \"{q['quote'][:60]}...\" — {q['philosopher']}", flush=True)
+            else:
+                print("[gemini] No quotes returned, will retry later", flush=True)
+        except Exception as exc:
+            print(f"[gemini] Refresh failed: {type(exc).__name__}: {exc}", flush=True)
+        finally:
+            self._gemini_refreshing = False
+
     async def _worker(self) -> None:
         while not self._stop_event.is_set():
             need = max(0, self._target_size - len(self._queue))
             if need == 0:
                 await asyncio.sleep(0.5)
                 continue
+
+            # Live Gemini refresh: generate fresh quotes when pool runs low
+            if self._live_gemini:
+                self._maybe_refresh_gemini()
+
             item = self._quotes[self._index % len(self._quotes)]
             self._index += 1
+            self._spoken_indices += 1
             result = await self._render_one(item)
             if result is not None:
                 self._queue.append(result)
@@ -575,6 +762,12 @@ async def main_async() -> None:
     parser.add_argument("--repeat-on-empty", action="store_true", help="Repeat existing quotes when out")
     parser.add_argument("--cache-dir", default="voices/quote_cache_edge", help="Directory for cached WAVs")
     parser.add_argument("--cache-size", type=int, default=4, help="Pre-rendered quotes to keep ready")
+
+    # Live Gemini auto-refresh
+    parser.add_argument("--live-gemini", action="store_true", help="Auto-generate fresh quotes via Gemini 2.5 Flash when pool runs low")
+    parser.add_argument("--gemini-refresh-threshold", type=int, default=5, help="Refresh when remaining unspoken quotes <= this")
+    parser.add_argument("--gemini-refresh-count", type=int, default=10, help="How many quotes to generate per Gemini refresh")
+    parser.add_argument("--gemini-timeout", type=int, default=30, help="Gemini API timeout in seconds")
     args = parser.parse_args()
 
     quote_path = Path(args.quotes)
@@ -619,7 +812,14 @@ async def main_async() -> None:
         echo_decay=args.echo_decay,
         echo_delay_ms=args.echo_delay_ms,
         target_size=max(1, int(args.cache_size)),
+        live_gemini=args.live_gemini,
+        gemini_refresh_threshold=args.gemini_refresh_threshold,
+        gemini_refresh_count=args.gemini_refresh_count,
+        gemini_timeout=args.gemini_timeout,
     )
+
+    if args.live_gemini:
+        print(f"[gemini] Live mode ON — will auto-generate {args.gemini_refresh_count} fresh quotes when pool <= {args.gemini_refresh_threshold}", flush=True)
 
     # Start background renderer
     renderer_task = asyncio.create_task(cache._worker())
