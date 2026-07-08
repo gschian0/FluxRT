@@ -3,7 +3,12 @@
 Edge-TTS quote streamer — drop-in replacement for run_quote_tts_from_json.py
 that uses Microsoft Edge TTS (free, no API key, no GPU) instead of NVIDIA Riva.
 
-Streams spoken quotes to UDP 5004 as AAC/MPEG-TS for the MediaMTX fanout amix.
+Features:
+- Randomly switches between all available en-US Neural voices
+- Reverb effect (matching Magpie TTS settings: mix=0.18, decay=0.35, delay=45ms)
+- Last-word echo effect (matching Magpie TTS: mix=0.28, decay=0.55, delay=120ms)
+- Streams spoken quotes to UDP 5004 as AAC/MPEG-TS for the MediaMTX fanout amix
+- Continuous silence between quotes so the UDP stream never drops
 """
 
 import argparse
@@ -11,15 +16,37 @@ import asyncio
 import json
 import os
 import random
+import re
 import subprocess
 import sys
-import tempfile
 import time
 import wave
+from array import array
 from pathlib import Path
 from typing import Optional
 
 import edge_tts
+
+# All available en-US Neural voices for random switching
+ALL_VOICES = [
+    "en-US-AnaNeural",
+    "en-US-AndrewMultilingualNeural",
+    "en-US-AndrewNeural",
+    "en-US-AriaNeural",
+    "en-US-AvaMultilingualNeural",
+    "en-US-AvaNeural",
+    "en-US-BrianMultilingualNeural",
+    "en-US-BrianNeural",
+    "en-US-ChristopherNeural",
+    "en-US-EmmaMultilingualNeural",
+    "en-US-EmmaNeural",
+    "en-US-EricNeural",
+    "en-US-GuyNeural",
+    "en-US-JennyNeural",
+    "en-US-MichelleNeural",
+    "en-US-RogerNeural",
+    "en-US-SteffanNeural",
+]
 
 
 def load_quotes(path: Path) -> list[dict]:
@@ -47,6 +74,185 @@ def build_spoken_text(item: dict, include_author: bool) -> str:
     return quote
 
 
+def extract_last_word(text: str) -> str:
+    """Extract the last meaningful word from text for echo targeting."""
+    words = re.findall(r"[a-zA-Z']+", text)
+    return words[-1] if words else ""
+
+
+def _clamp(val: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, val))
+
+
+def apply_fade_in(wav_path: Path, fade_ms: int = 50) -> None:
+    """Apply a short fade-in to the start of the WAV to prevent UDP stutter.
+
+    The UDP AAC encoder can clip or stutter on the first few milliseconds
+    of audio when a new clip starts. A 50ms linear fade-in smooths this out.
+    """
+    fade_ms = int(_clamp(float(fade_ms), 0.0, 500.0))
+    if fade_ms <= 0:
+        return
+
+    with wave.open(str(wav_path), "rb") as in_f:
+        n_channels = in_f.getnchannels()
+        sampwidth = in_f.getsampwidth()
+        frame_rate = in_f.getframerate()
+        n_frames = in_f.getnframes()
+        audio_bytes = in_f.readframes(n_frames)
+
+    if n_channels != 1 or sampwidth != 2:
+        return
+
+    samples = array("h")
+    samples.frombytes(audio_bytes)
+    if not samples:
+        return
+
+    fade_samples = min(int(frame_rate * fade_ms / 1000), len(samples))
+    if fade_samples <= 1:
+        return
+
+    for idx in range(fade_samples):
+        ratio = idx / fade_samples  # 0.0 → 1.0
+        samples[idx] = int(samples[idx] * ratio)
+
+    with wave.open(str(wav_path), "wb") as out_f:
+        out_f.setnchannels(n_channels)
+        out_f.setsampwidth(sampwidth)
+        out_f.setframerate(frame_rate)
+        out_f.writeframes(samples.tobytes())
+
+
+def apply_reverb(wav_path: Path, mix: float, decay: float, delay_ms: int) -> None:
+    """Apply reverb using feedforward delays (matching magpie_tts_logic.py exactly).
+
+    Uses 4 taps with exponentially decaying gain — no feedback loops, so no
+    harsh feedback sound. This is the exact same DSP as the original Magpie TTS.
+    """
+    mix = _clamp(mix, 0.0, 1.0)
+    decay = _clamp(decay, 0.0, 0.95)
+    delay_ms = int(_clamp(float(delay_ms), 5.0, 500.0))
+
+    with wave.open(str(wav_path), "rb") as in_f:
+        n_channels = in_f.getnchannels()
+        sampwidth = in_f.getsampwidth()
+        frame_rate = in_f.getframerate()
+        n_frames = in_f.getnframes()
+        audio_bytes = in_f.readframes(n_frames)
+
+    if n_channels != 1 or sampwidth != 2:
+        return
+
+    samples = array("h")
+    samples.frombytes(audio_bytes)
+    if not samples:
+        return
+
+    delay_samples = max(1, int(frame_rate * delay_ms / 1000))
+    taps = 4
+
+    wet = [0.0] * len(samples)
+    for tap in range(1, taps + 1):
+        gain = decay ** tap
+        offset = delay_samples * tap
+        for idx in range(offset, len(samples)):
+            wet[idx] += samples[idx - offset] * gain
+
+    out = array("h")
+    dry_gain = 1.0 - mix
+    wet_gain = mix
+    for idx, dry in enumerate(samples):
+        mixed = int(dry * dry_gain + wet[idx] * wet_gain)
+        if mixed > 32767:
+            mixed = 32767
+        elif mixed < -32768:
+            mixed = -32768
+        out.append(mixed)
+
+    with wave.open(str(wav_path), "wb") as out_f:
+        out_f.setnchannels(n_channels)
+        out_f.setsampwidth(sampwidth)
+        out_f.setframerate(frame_rate)
+        out_f.writeframes(out.tobytes())
+
+
+def apply_last_word_echo(
+    wav_path: Path,
+    source_text: str,
+    target_word: str,
+    mix: float,
+    decay: float,
+    delay_ms: int,
+) -> None:
+    """Apply echo to the last word only (matching magpie_tts_logic.py exactly).
+
+    Uses 5 feedforward taps starting from the last word's position.
+    No feedback loops — just delayed copies mixed in.
+    """
+    mix = _clamp(mix, 0.0, 1.0)
+    decay = _clamp(decay, 0.0, 0.95)
+    delay_ms = int(_clamp(float(delay_ms), 5.0, 500.0))
+
+    with wave.open(str(wav_path), "rb") as in_f:
+        n_channels = in_f.getnchannels()
+        sampwidth = in_f.getsampwidth()
+        frame_rate = in_f.getframerate()
+        n_frames = in_f.getnframes()
+        audio_bytes = in_f.readframes(n_frames)
+
+    if n_channels != 1 or sampwidth != 2:
+        return
+
+    samples = array("h")
+    samples.frombytes(audio_bytes)
+    if not samples:
+        return
+
+    clean_text = " ".join(source_text.lower().split())
+    clean_target = re.sub(r"[^a-z0-9']+", "", target_word.lower())
+
+    start_ratio = 0.78
+    if clean_text and clean_target:
+        idx = clean_text.rfind(clean_target)
+        if idx >= 0:
+            start_ratio = idx / max(1, len(clean_text))
+
+    start_sample = int(_clamp(start_ratio, 0.0, 0.98) * len(samples))
+    delay_samples = max(1, int(frame_rate * delay_ms / 1000))
+    taps = 5
+
+    wet = [0.0] * len(samples)
+    for tap in range(1, taps + 1):
+        gain = decay ** tap
+        offset = delay_samples * tap
+        for idx in range(start_sample + offset, len(samples)):
+            src = idx - offset
+            if src < start_sample:
+                continue
+            wet[idx] += samples[src] * gain
+
+    out = array("h")
+    dry_gain = 1.0 - mix
+    wet_gain = mix
+    for idx, dry in enumerate(samples):
+        if idx < start_sample:
+            mixed = dry
+        else:
+            mixed = int(dry * dry_gain + wet[idx] * wet_gain)
+        if mixed > 32767:
+            mixed = 32767
+        elif mixed < -32768:
+            mixed = -32768
+        out.append(mixed)
+
+    with wave.open(str(wav_path), "wb") as out_f:
+        out_f.setnchannels(n_channels)
+        out_f.setsampwidth(sampwidth)
+        out_f.setframerate(frame_rate)
+        out_f.writeframes(out.tobytes())
+
+
 async def synthesize_edge_tts(
     text: str,
     voice: str,
@@ -54,8 +260,16 @@ async def synthesize_edge_tts(
     rate: str = "+0%",
     volume: str = "+0%",
     pitch: str = "+0Hz",
+    reverb: bool = False,
+    reverb_mix: float = 0.18,
+    reverb_decay: float = 0.35,
+    reverb_delay_ms: int = 45,
+    last_word_echo: bool = False,
+    echo_mix: float = 0.28,
+    echo_decay: float = 0.55,
+    echo_delay_ms: int = 120,
 ) -> bool:
-    """Generate a WAV file from text using edge-tts."""
+    """Generate a WAV file from text using edge-tts with reverb + echo effects."""
     try:
         communicate = edge_tts.Communicate(
             text=text,
@@ -64,7 +278,6 @@ async def synthesize_edge_tts(
             volume=volume,
             pitch=pitch,
         )
-        # edge-tts outputs MP3, so we save MP3 then convert to WAV via ffmpeg
         mp3_path = output_path.with_suffix(".mp3")
         await communicate.save(str(mp3_path))
 
@@ -79,9 +292,25 @@ async def synthesize_edge_tts(
             check=True,
         )
         mp3_path.unlink(missing_ok=True)
+
+        # Apply fade-in first to prevent UDP stutter on clip start
+        apply_fade_in(output_path, fade_ms=50)
+
+        # Apply reverb + echo as pure Python DSP (matching magpie_tts_logic.py)
+        if reverb:
+            apply_reverb(output_path, reverb_mix, reverb_decay, reverb_delay_ms)
+        if last_word_echo:
+            echo_word = extract_last_word(text)
+            if echo_word:
+                apply_last_word_echo(
+                    output_path, text, echo_word,
+                    echo_mix, echo_decay, echo_delay_ms,
+                )
         return True
     except Exception as exc:
         print(f"[edge-tts] synthesis failed: {type(exc).__name__}: {exc}")
+        mp3_path = output_path.with_suffix(".mp3")
+        mp3_path.unlink(missing_ok=True)
         return False
 
 
@@ -92,24 +321,40 @@ class QuoteCache:
         self,
         quotes: list[dict],
         cache_dir: Path,
-        voice: str,
+        voices: list[str],
         rate: str,
         volume: str,
         pitch: str,
         include_author: bool,
+        reverb: bool,
+        reverb_mix: float,
+        reverb_decay: float,
+        reverb_delay_ms: int,
+        last_word_echo: bool,
+        echo_mix: float,
+        echo_decay: float,
+        echo_delay_ms: int,
         target_size: int = 4,
     ):
         self._quotes = quotes
         self._cache_dir = cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        self._voice = voice
+        self._voices = voices
         self._rate = rate
         self._volume = volume
         self._pitch = pitch
         self._include_author = include_author
+        self._reverb = reverb
+        self._reverb_mix = reverb_mix
+        self._reverb_decay = reverb_decay
+        self._reverb_delay_ms = reverb_delay_ms
+        self._last_word_echo = last_word_echo
+        self._echo_mix = echo_mix
+        self._echo_decay = echo_decay
+        self._echo_delay_ms = echo_delay_ms
         self._target_size = target_size
-        self._queue: list[Path] = []
-        self._fallback_paths: list[Path] = []
+        self._queue: list[tuple[Path, str]] = []  # (wav_path, voice_name)
+        self._fallback_paths: list[tuple[Path, str]] = []
         self._stop_event = asyncio.Event()
         self._index = 0
         self._cache_index = 0
@@ -117,24 +362,35 @@ class QuoteCache:
 
     def _load_existing_cache(self) -> None:
         existing = sorted(self._cache_dir.glob("quote_*.wav"))
-        self._fallback_paths = existing[-max(1, self._target_size * 2):]
-        self._queue.extend(self._fallback_paths[-self._target_size:])
+        for p in existing[-max(1, self._target_size * 2):]:
+            self._fallback_paths.append((p, "unknown"))
+        for p, v in self._fallback_paths[-self._target_size:]:
+            self._queue.append((p, v))
 
-    async def _render_one(self, item: dict) -> Optional[Path]:
+    async def _render_one(self, item: dict) -> Optional[tuple[Path, str]]:
         text = build_spoken_text(item, include_author=self._include_author)
+        voice = random.choice(self._voices)
         cache_path = self._cache_dir / f"quote_{int(time.time())}_{self._cache_index:06d}.wav"
         self._cache_index += 1
         ok = await synthesize_edge_tts(
             text=text,
-            voice=self._voice,
+            voice=voice,
             output_path=cache_path,
             rate=self._rate,
             volume=self._volume,
             pitch=self._pitch,
+            reverb=self._reverb,
+            reverb_mix=self._reverb_mix,
+            reverb_decay=self._reverb_decay,
+            reverb_delay_ms=self._reverb_delay_ms,
+            last_word_echo=self._last_word_echo,
+            echo_mix=self._echo_mix,
+            echo_decay=self._echo_decay,
+            echo_delay_ms=self._echo_delay_ms,
         )
         if not ok:
             return None
-        return cache_path
+        return (cache_path, voice)
 
     async def _worker(self) -> None:
         while not self._stop_event.is_set():
@@ -144,24 +400,13 @@ class QuoteCache:
                 continue
             item = self._quotes[self._index % len(self._quotes)]
             self._index += 1
-            path = await self._render_one(item)
-            if path is not None:
-                self._queue.append(path)
-                self._fallback_paths.append(path)
+            result = await self._render_one(item)
+            if result is not None:
+                self._queue.append(result)
+                self._fallback_paths.append(result)
                 self._fallback_paths = self._fallback_paths[-max(1, self._target_size * 2):]
 
-    def get(self, timeout: float = 30.0) -> Optional[Path]:
-        """Synchronous get — used from the main async loop via run_in_executor."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._queue:
-                return self._queue.pop(0)
-            time.sleep(0.1)
-        if self._fallback_paths:
-            return random.choice(self._fallback_paths)
-        return None
-
-    async def get_async(self, timeout: float = 30.0) -> Optional[Path]:
+    async def get_async(self, timeout: float = 30.0) -> Optional[tuple[Path, str]]:
         """Async get — yields control so the renderer worker can run."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -270,7 +515,7 @@ class UdpAudioWriter:
 
 async def main_async() -> None:
     parser = argparse.ArgumentParser(
-        description="Speak quote JSON entries using Edge TTS (Microsoft Neural voices)"
+        description="Speak quote JSON entries using Edge TTS with reverb + echo + random voices"
     )
     parser.add_argument(
         "--quotes",
@@ -283,11 +528,45 @@ async def main_async() -> None:
     parser.add_argument("--max", type=int, default=0, help="Maximum quotes to speak (0 = all/infinite)")
     parser.add_argument("--no-author", action="store_true", help="Do not append philosopher name")
 
-    parser.add_argument("--voice", default="en-US-AriaNeural", help="Edge TTS voice name")
+    # Voice selection
+    parser.add_argument(
+        "--voice",
+        default="",
+        help="Single voice to use (overrides --random-voices). If empty, uses random voices.",
+    )
+    parser.add_argument(
+        "--random-voices",
+        action="store_true",
+        default=True,
+        help="Randomly switch between all available en-US voices (default: True)",
+    )
+    parser.add_argument(
+        "--no-random-voices",
+        dest="random_voices",
+        action="store_false",
+        help="Use a single voice instead of random switching",
+    )
+
+    # Speech parameters
     parser.add_argument("--rate", default="+0%", help="Speech rate (e.g. +10%%, -10%%)")
     parser.add_argument("--volume", default="+0%", help="Volume adjustment (e.g. +20%%)")
     parser.add_argument("--pitch", default="+0Hz", help="Pitch adjustment (e.g. +5Hz, -5Hz)")
 
+    # Reverb (matching Magpie TTS defaults)
+    parser.add_argument("--reverb", action="store_true", default=True, help="Enable reverb effect")
+    parser.add_argument("--no-reverb", dest="reverb", action="store_false", help="Disable reverb")
+    parser.add_argument("--reverb-mix", type=float, default=0.35, help="Reverb wet mix (0-1)")
+    parser.add_argument("--reverb-decay", type=float, default=0.50, help="Reverb decay (0-1)")
+    parser.add_argument("--reverb-delay-ms", type=int, default=60, help="Reverb delay in ms")
+
+    # Last-word echo (matching Magpie TTS defaults)
+    parser.add_argument("--echo", action="store_true", default=True, help="Enable last-word echo")
+    parser.add_argument("--no-echo", dest="echo", action="store_false", help="Disable echo")
+    parser.add_argument("--echo-mix", type=float, default=0.45, help="Echo wet mix (0-1)")
+    parser.add_argument("--echo-decay", type=float, default=0.65, help="Echo decay (0-1)")
+    parser.add_argument("--echo-delay-ms", type=int, default=150, help="Echo delay in ms")
+
+    # Streaming
     parser.add_argument(
         "--udp-url",
         default="",
@@ -304,20 +583,41 @@ async def main_async() -> None:
 
     quotes = load_quotes(quote_path)
     print(f"Loaded {len(quotes)} quotes from {quote_path}")
-    print(f"Voice: {args.voice}")
+
+    # Determine voice list
+    if args.voice:
+        voices = [args.voice]
+        print(f"Voice: {args.voice} (single voice)")
+    elif args.random_voices:
+        voices = ALL_VOICES[:]
+        print(f"Voices: {len(voices)} en-US Neural voices (random switching)")
+    else:
+        voices = ["en-US-AriaNeural"]
+        print(f"Voice: en-US-AriaNeural (default)")
 
     if args.shuffle:
         random.shuffle(quotes)
+
+    print(f"Reverb: {'ON' if args.reverb else 'OFF'} (mix={args.reverb_mix}, decay={args.reverb_decay}, delay={args.reverb_delay_ms}ms)")
+    print(f"Echo: {'ON' if args.echo else 'OFF'} (mix={args.echo_mix}, decay={args.echo_decay}, delay={args.echo_delay_ms}ms)")
 
     udp_writer = UdpAudioWriter(args.udp_url.strip()) if args.udp_url.strip() else None
     cache = QuoteCache(
         quotes=quotes,
         cache_dir=Path(args.cache_dir),
-        voice=args.voice,
+        voices=voices,
         rate=args.rate,
         volume=args.volume,
         pitch=args.pitch,
         include_author=not args.no_author,
+        reverb=args.reverb,
+        reverb_mix=args.reverb_mix,
+        reverb_decay=args.reverb_decay,
+        reverb_delay_ms=args.reverb_delay_ms,
+        last_word_echo=args.echo,
+        echo_mix=args.echo_mix,
+        echo_decay=args.echo_decay,
+        echo_delay_ms=args.echo_delay_ms,
         target_size=max(1, int(args.cache_size)),
     )
 
@@ -336,12 +636,13 @@ async def main_async() -> None:
                 await asyncio.sleep(1)
                 continue
 
+            wav_path, voice_name = out_path
             spoken_count += 1
-            print(f"[{spoken_count}] streaming: {out_path.name}")
+            print(f"[{spoken_count}] voice={voice_name} streaming: {wav_path.name}")
 
             if udp_writer is not None:
                 try:
-                    udp_writer.write_wav(out_path)
+                    udp_writer.write_wav(wav_path)
                     print(f"  → streamed to {args.udp_url.strip()}")
                 except Exception as exc:
                     print(f"  → UDP stream failed: {type(exc).__name__}: {exc}")
