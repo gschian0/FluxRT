@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-import argparse
-import random
-import time
+"""Rotate FluxRT image prompts through the Gradio API using curl (HTTP).
 
-from gradio_client import Client
+Uses the Gradio 6.x REST API directly via subprocess curl calls instead of
+the gradio_client library, which was unstable in long-running background
+processes.
+"""
+import argparse
+import json
+import random
+import subprocess
+import time
 
 
 PROMPTS = [
@@ -25,7 +31,51 @@ PROMPTS = [
     "8k high resolution comic book paint style, alien host in a crowded surreal studio, bold clean outlines, vivid halftone texture, dramatic camera angle, sharp broadcast-ready frame",
     "8k high resolution surreal botanical studio set, alien presenter made of lacquered petals and moss-like fibers, vivid greens and coral lights, macro detail, crisp cinematic image",
     "8k high resolution hyperreal textile planet, carpet mountains and fuzzy buildings, fur-covered characters hosting a music show, bright pop colors, sharp macro lens, polished frame",
+    "8k high resolution made of carpet, fuzzy shag carpet characters, woven yarn texture, tufted fabric landscape, colorful fiber studio, macro pile detail, bright studio lighting, crisp broadcast image",
+    "8k high resolution tinsel town, glittering metallic tinsel characters, sparkling foil landscape, reflective chrome surfaces, festive shimmering lights, sharp macro detail, vivid cinematic frame",
+    "8k high resolution claymation, handmade clay characters, visible fingerprints, tactile texture, miniature broadcast studio, saturated practical lights, crisp macro lens, cinematic depth of field",
+    "8k high resolution shiny claymation, glossy glazed clay characters, reflective porcelain surfaces, vibrant enamel colors, bright studio lighting, sharp macro detail, polished cinematic frame",
+    "8k high resolution smiley face emoji face on head, characters with big yellow emoji faces, expressive cartoon features, colorful studio set, bright pop lighting, crisp broadcast quality, playful design",
+    "8k high resolution Simpsons style, yellow cartoon characters, bulbous animated features, flat cel-shaded lighting, vivid primary colors, suburban broadcast studio, crisp animated frame",
+    "8k high resolution 3D render, rasterization, twobit vision, lo fi render, chunky low-poly characters, dithered shading, limited color palette, retro digital aesthetic, pixelated edges, nostalgic broadcast frame",
 ]
+
+
+def set_prompt(gradio_url: str, prompt: str, timeout: int = 120) -> bool:
+    """Set a prompt via the Gradio REST API using curl."""
+    api_base = f"{gradio_url.rstrip('/')}/gradio_api/call/apply_custom_image_prompt"
+    # Step 1: POST the prompt to get an event_id
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-X", "POST", api_base,
+             "-H", "Content-Type: application/json",
+             "-d", json.dumps({"data": [prompt]})],
+            capture_output=True, text=True, timeout=30,
+        )
+        resp = json.loads(result.stdout)
+        event_id = resp.get("event_id")
+        if not event_id:
+            print(f"[prompt-rotator] no event_id in response: {result.stdout}", flush=True)
+            return False
+    except Exception as exc:
+        print(f"[prompt-rotator] POST failed: {type(exc).__name__}: {exc}", flush=True)
+        return False
+
+    # Step 2: GET the result (SSE stream)
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-N", f"{api_base}/{event_id}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if "complete" in result.stdout:
+            print(f"[prompt-rotator] set prompt: {prompt[:80]}...", flush=True)
+            return True
+        else:
+            print(f"[prompt-rotator] unexpected response: {result.stdout[:200]}", flush=True)
+            return False
+    except Exception as exc:
+        print(f"[prompt-rotator] GET failed: {type(exc).__name__}: {exc}", flush=True)
+        return False
 
 
 def main() -> None:
@@ -36,21 +86,16 @@ def main() -> None:
     parser.add_argument("--shuffle", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
-    client = Client(args.gradio_url)
     prompts = list(PROMPTS)
     index = 0
-    print(f"[prompt-rotator] connected to {args.gradio_url}", flush=True)
+    print(f"[prompt-rotator] started, {len(prompts)} prompts, interval={args.interval}s", flush=True)
     while True:
         if args.shuffle:
             prompt = random.choice(prompts)
         else:
             prompt = prompts[index % len(prompts)]
             index += 1
-        try:
-            client.predict(prompt, api_name="/set_prompt")
-            print(f"[prompt-rotator] set prompt: {prompt}", flush=True)
-        except Exception as exc:
-            print(f"[prompt-rotator] failed: {type(exc).__name__}: {exc}", flush=True)
+        set_prompt(args.gradio_url, prompt)
         delay = max(10.0, float(args.interval) + random.uniform(-args.jitter, args.jitter))
         time.sleep(delay)
 

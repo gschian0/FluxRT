@@ -256,7 +256,10 @@ def _playback_worker(
     now_marker_path: Path,
     out_dir: Path,
     bootstrap_clips: list[np.ndarray] | None = None,
+    audio_udp_url: str = "",
 ):
+    # Store the UDP URL for ffmpeg restart on pipe break
+    _udp_url = audio_udp_url
     started = False
     buffered_seconds = 0.0
     buffer: list[tuple[int, np.ndarray]] = []
@@ -278,7 +281,7 @@ def _playback_worker(
         )
 
     def _stream_array(arr: np.ndarray):
-        nonlocal next_write_at
+        nonlocal next_write_at, udp_proc
         if arr is None or arr.size == 0:
             return
         if udp_proc is None or udp_proc.stdin is None:
@@ -289,7 +292,26 @@ def _playback_worker(
         idx = 0
         while idx < total:
             chunk = arr[idx : idx + chunk_size]
-            udp_proc.stdin.write(chunk.astype(np.float32, copy=False).tobytes())
+            try:
+                udp_proc.stdin.write(chunk.astype(np.float32, copy=False).tobytes())
+            except (BrokenPipeError, OSError, ValueError) as exc:
+                print(f"[musicgen] PIPE ERROR writing to ffmpeg: {type(exc).__name__}: {exc} — restarting ffmpeg")
+                try:
+                    udp_proc.stdin.close()
+                except Exception:
+                    pass
+                try:
+                    udp_proc.kill()
+                except Exception:
+                    pass
+                # Restart the ffmpeg encoder
+                udp_proc = _start_audio_udp_encoder(sample_rate, _udp_url)
+                print("[musicgen] ffmpeg encoder restarted — resuming audio stream")
+                # Try writing the chunk again
+                try:
+                    udp_proc.stdin.write(chunk.astype(np.float32, copy=False).tobytes())
+                except Exception:
+                    pass
             idx += chunk_size
             next_write_at += chunk.shape[0] / sample_rate
             now = time.monotonic()
@@ -779,6 +801,7 @@ def main() -> None:
                 now_marker_path,
                 out_dir,
                 bootstrap_clips,
+                args.audio_udp_url.strip(),
             ),
             daemon=True,
         )
