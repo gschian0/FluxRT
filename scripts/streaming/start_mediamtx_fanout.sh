@@ -172,7 +172,7 @@ AUDIO_INPUT_URL="$(ensure_udp_buffer_params "$AUDIO_INPUT_URL")"
 TTS_INPUT_URL="$(ensure_udp_buffer_params "$TTS_INPUT_URL")"
 
 AUDIO_SOURCE_MODE="${AUDIO_SOURCE_MODE:-url}"
-TTS_SOURCE_MODE="${TTS_SOURCE_MODE:-silence}"
+TTS_SOURCE_MODE="${TTS_SOURCE_MODE:-url}"
 
 # Keep broadcast audio always open: base silence is always present, while
 # music / TTS legs are added when available and otherwise replaced by silence.
@@ -191,12 +191,8 @@ else
 fi
 
 if [[ "$ENABLE_TTS_OVERLAY" == "1" && "$TTS_SOURCE_MODE" == "url" ]]; then
-  if wait_udp_audio_ready "$TTS_INPUT_URL" "$TTS_WAIT_TIMEOUT"; then
-    AUDIO2_INPUT="-thread_queue_size 16384 -i \"${TTS_INPUT_URL}\""
-  else
-    echo "[fanout] tts input unavailable after ${TTS_WAIT_TIMEOUT}s, using silence fallback"
-    AUDIO2_INPUT="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
-  fi
+  echo "[fanout] binding TTS UDP directly (will wait for audio to arrive)"
+  AUDIO2_INPUT="-thread_queue_size 16384 -i \"${TTS_INPUT_URL}\""
   TTS_VOL_EFFECTIVE="$TTS_MIX_VOLUME"
 else
   AUDIO2_INPUT="-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000"
