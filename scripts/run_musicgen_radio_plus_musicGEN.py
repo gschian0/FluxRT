@@ -159,15 +159,16 @@ _CREATIVE_SEED_PROMPTS = [
 
 # Consistency tail — appended to every prompt to keep clips coherent.
 _CONSISTENCY_TAIL = (
-    "cohesive songform, same key throughout, "
-    "smooth instrumental mix, no vocals, no abrupt style change"
+    "cohesive songform, same key and tempo throughout, "
+    "smooth instrumental mix, no vocals, no abrupt style change, "
+    "seamless transitions, consistent mood and instrumentation"
 )
 
 # Default BPM for generation — evenly divisible, easy to work with.
 _DEFAULT_BPM = 120
 
-# How many clips before rotating to a new seed prompt (faster evolution).
-_SEED_ROTATION_INTERVAL = 4
+# How many clips before rotating to a new seed prompt (higher = more consistent).
+_SEED_ROTATION_INTERVAL = 8
 
 
 def _pick_random_seed_prompt(base_prompt: str, bpm: int = _DEFAULT_BPM) -> str:
@@ -743,10 +744,34 @@ def main() -> None:
     else:
         print("[musicgen] no radio URL provided — using layered prompt mode (no radio sampling)")
 
-    # --- Pre-generation phase: build a large buffer before starting playback ---
-    # This is critical: with RTF ~2.5x, we need a big buffer to survive underruns.
-    # Pre-generating N clips means the playback worker has N*gen_seconds of audio
-    # queued before it even starts streaming.
+    # Start playback as soon as we have bootstrap clips so the stream can begin
+    # immediately, even while new clips are still being generated.
+    if args.audio_udp_url.strip():
+        playback_thread = threading.Thread(
+            target=_playback_worker,
+            args=(
+                audio_queue,
+                sample_rate,
+                max(0.0, args.stream_delay_seconds),
+                max(0.0, args.crossfade_seconds),
+                udp_proc,
+                now_marker_path,
+                out_dir,
+                bootstrap_clips,
+                args.audio_udp_url.strip(),
+            ),
+            daemon=True,
+        )
+        playback_thread.start()
+        print(
+            f"[musicgen] audio stream -> {args.audio_udp_url} "
+            f"(delay={args.stream_delay_seconds}s, bootstrap={len(bootstrap_clips)} clips / {bootstrap_seconds:.1f}s)",
+            flush=True,
+        )
+
+    # --- Pre-generation phase: build a large buffer while playback is already live ---
+    # We still generate an initial batch so fresh clips are ready to take over,
+    # but the listener hears the bootstrap clips immediately.
     pre_gen_clips: list[np.ndarray] = []
     pre_gen_previous_audio: np.ndarray | None = None
 
@@ -815,7 +840,10 @@ def main() -> None:
                     pg_mono = np.array([float(pg_mono)], dtype=np.float32)
                 pg_mono = pg_mono.astype(np.float32, copy=False)
                 pre_gen_previous_audio = pg_mono[-int(max(1.0, float(args.conditioning_seconds)) * sample_rate) :].copy()
-                pre_gen_clips.append(np.clip(pg_mono, -0.98, 0.98))
+                pg_clip = np.clip(pg_mono, -0.98, 0.98)
+                pre_gen_clips.append(pg_clip)
+                if audio_queue is not None:
+                    audio_queue.put((pg_idx * max(1, pg_batch_size) + bp, pg_clip))
 
         # Write pre-gen clips to disk so they become bootstrap for future runs
         for pg_idx, pg_clip in enumerate(pre_gen_clips):
@@ -829,30 +857,6 @@ def main() -> None:
         bootstrap_clips = (bootstrap_clips or []) + pre_gen_clips
         bootstrap_seconds = sum(c.shape[0] / sample_rate for c in bootstrap_clips)
         print(f"[musicgen] total bootstrap buffer: {len(bootstrap_clips)} clips ({bootstrap_seconds:.1f}s)", flush=True)
-
-    # Start playback thread AFTER pre-generation so the buffer is ready
-    if args.audio_udp_url.strip():
-        playback_thread = threading.Thread(
-            target=_playback_worker,
-            args=(
-                audio_queue,
-                sample_rate,
-                max(0.0, args.stream_delay_seconds),
-                max(0.0, args.crossfade_seconds),
-                udp_proc,
-                now_marker_path,
-                out_dir,
-                bootstrap_clips,
-                args.audio_udp_url.strip(),
-            ),
-            daemon=True,
-        )
-        playback_thread.start()
-        print(
-            f"[musicgen] audio stream -> {args.audio_udp_url} "
-            f"(delay={args.stream_delay_seconds}s, bootstrap={len(bootstrap_clips)} clips / {bootstrap_seconds:.1f}s)",
-            flush=True,
-        )
 
     def _generation_loop() -> None:
         current_top_k = top_k
@@ -1048,9 +1052,11 @@ def main() -> None:
 
             time.sleep(max(0.0, args.pause_seconds))
 
-    if audio_queue is not None:
-        generation_thread = threading.Thread(target=_generation_loop, daemon=True)
-        generation_thread.start()
+    # Always start the generation thread — even without audio_queue we still
+    # write clips to disk for the separate stream_audio_udp.py to pick up.
+    generation_thread = threading.Thread(target=_generation_loop, daemon=True)
+    generation_thread.start()
+    print("[musicgen] generation thread started", flush=True)
 
     try:
         while True:

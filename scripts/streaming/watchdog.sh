@@ -46,17 +46,15 @@ restart_ingest() {
     pkill -9 -f "amix=inputs=3" 2>/dev/null
     sleep 2
     nohup setsid ffmpeg -hide_banner -loglevel error \
-        -fflags +genpts+discardcorrupt+igndts+nobuffer \
-        -err_detect ignore_err \
-        -analyzeduration 5000000 -probesize 5000000 \
-        -thread_queue_size 32768 -i "udp://127.0.0.1:5000?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1" \
+        -fflags +genpts+discardcorrupt+igndts \
+        -thread_queue_size 16384 -i "udp://127.0.0.1:5000?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1" \
         -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=48000 \
-        -f mpegts -analyzeduration 0 -probesize 32 -thread_queue_size 32768 -i "udp://127.0.0.1:5002?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1&timeout=30000000" \
-        -f mpegts -analyzeduration 0 -probesize 32 -thread_queue_size 32768 -i "udp://127.0.0.1:5004?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1&timeout=30000000" \
+        -thread_queue_size 16384 -i "udp://127.0.0.1:5002?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1" \
+        -thread_queue_size 16384 -i "udp://127.0.0.1:5004?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1" \
         -map 0:v:0 -map "[aout]" \
         -filter_complex "[1:a]volume=1.0[base];[2:a]volume=1.3[music];[3:a]volume=0.85[tts];[base][music][tts]amix=inputs=3:duration=longest:dropout_transition=0:normalize=0,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]" \
         -c:v copy -c:a aac -b:a 96k -ar 48000 -ac 2 \
-        -max_muxing_queue_size 8192 -muxdelay 0 -muxpreload 0 \
+        -max_muxing_queue_size 4096 -muxdelay 0 -muxpreload 0 \
         -f flv "rtmp://127.0.0.1:1935/fluxrt" \
         > /tmp/fluxrt-mediamtx-ingest.log 2>&1 & disown
     sleep 3
@@ -91,10 +89,10 @@ restart_musicgen() {
         --gen-seconds 16 \
         --top-k 250 --top-p 0.95 --temperature 1.0 --guidance-scale 3.0 \
         --no-drunk-walk --parallel-clips 2 --seed -1 \
-        --bootstrap-clips 24 --pre-generate 10 --bpm 120 \
+        --bootstrap-clips 24 --pre-generate 0 --bpm 120 \
         --pause-seconds 0 --base-prompt "" \
         --conditioning-mode continuation --conditioning-seconds 8 \
-        --stream-delay-seconds 120 \
+        --stream-delay-seconds 0 \
         --audio-udp-url "udp://127.0.0.1:5002?pkt_size=1316" \
         --crossfade-seconds 2.0 \
         > /dev/shm/musicgen/musicgen.log 2>&1 & disown
@@ -126,7 +124,7 @@ restart_gradio() {
     pkill -9 -f "multiprocessing.spawn" 2>/dev/null
     sleep 5
     cd /workspace/FluxRT
-    CUDA_VISIBLE_DEVICES=0 GRADIO_SHARE=1 nohup setsid taskset -c 0-15 \
+    GRADIO_SHARE=1 nohup setsid taskset -c 0-15 \
         /root/fluxrt-venv/bin/python -u scripts/run_gradio_stream_demo.py \
         --int8 --server-name 0.0.0.0 --server-port 7862 \
         --config-path configs/stream_demo_config.json \

@@ -275,6 +275,35 @@ echo "TTS: $(pgrep -f 'run_edge_tts' > /dev/null && echo UP || echo DOWN)"
 echo "Watchdog: $(pgrep -f 'watchdog.sh' > /dev/null && echo UP || echo DOWN)"
 ```
 
+## Current Lock-In
+
+Use this when you want the current known-good stack back with as few clicks as possible:
+
+```bash
+cd /workspace/FluxRT
+scripts/streaming/stack_current.sh start
+```
+
+Stop it with:
+
+```bash
+cd /workspace/FluxRT
+scripts/streaming/stack_current.sh stop
+```
+
+Status only:
+
+```bash
+cd /workspace/FluxRT
+scripts/streaming/stack_current.sh status
+```
+
+This lock-in starts:
+- Gradio video on GPU 0
+- Edge TTS quotes in the project `.venv`
+- MusicGen on GPU 1 with immediate bootstrap playback and no startup delay
+- MediaMTX plus the watchdog so the relay can self-heal
+
 ---
 
 ## Health Check Commands

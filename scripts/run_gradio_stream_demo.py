@@ -18,7 +18,7 @@ from fluxrt.utils import crop_maximal_rectangle
 # Must match fanout FPS (start_rtmp_fanout.sh) to avoid massive frame drops on Twitch.
 BROADCAST_FPS = float(os.environ.get("BROADCAST_FPS", "8"))
 
-default_prompt = "8k ultra high resolution claymation character video frame, expressive handmade alien hosts, visible fingerprints in clay, miniature broadcast studio, saturated practical lights, crisp macro lens detail, cinematic depth of field"
+default_prompt = "claymation, sketch, multicolor ink, cosmic background"
 default_stream_url = "https://streamer1.connectto.com/AABC_WEB_1201/index.m3u8"
 default_music_radio_url = "http://stream.zeno.fm/0a4yq1u0f0hvv"
 default_music_station_name = "Reggae King Radio"
@@ -457,32 +457,17 @@ def _push_processed_for_broadcast(processed_frame: np.ndarray | None, fps: float
 
     if not _workers_alive():
         _reset_broadcast_gate("workers not healthy")
-        with frame_lock:
-            fallback_input = current_input_frame
-        fallback_frame = to_bgr(fallback_input) if fallback_input is not None else None
-        if fallback_frame is not None:
-            _enqueue_broadcast_frame(fallback_frame, fps=float(fps))
         return
 
     if not _is_processed_frame_valid(processed_frame):
         with processed_valid_streak_lock:
             processed_valid_streak = 0
         _set_broadcast_ready(False)
-        # Keep the stream alive through short upstream stalls by replaying
-        # the most recent valid real frame instead of dropping the publisher.
-        with last_good_broadcast_frame_lock:
-            fallback_frame = (
-                None
-                if last_good_broadcast_frame is None
-                else last_good_broadcast_frame.copy()
-            )
-        if fallback_frame is None:
-            with frame_lock:
-                current_input = current_input_frame
-            if current_input is not None:
-                fallback_frame = to_bgr(current_input)
-        if fallback_frame is not None:
-            _enqueue_broadcast_frame(fallback_frame, fps=float(fps))
+        with frame_lock:
+            raw_input_frame = current_input_frame
+        raw_frame = to_bgr(raw_input_frame) if raw_input_frame is not None else None
+        if raw_frame is not None:
+            _enqueue_broadcast_frame(raw_frame, fps=float(fps))
         return
 
     with processed_valid_streak_lock:
@@ -552,17 +537,14 @@ def _get_udp_writer(width, height, fps=None):
                 '-s', f'{width}x{height}',
                 '-r', str(fps),
                 '-i', '-',
-                '-c:v', 'h264_nvenc',
-                '-preset', 'p1',
-                '-tune', 'ull',
-                '-profile:v', 'baseline',
-                '-level', 'auto',
-                '-b:v', '2M',
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',
+                '-tune', 'zerolatency',
                 '-g', str(gop),
                 '-keyint_min', str(gop),
                 '-sc_threshold', '0',
+                '-x264-params', f'repeat-headers=1:keyint={gop}:min-keyint={gop}:scenecut=0',
                 '-pix_fmt', 'yuv420p',
-                '-bsf:v', 'dump_extra=freq=keyframe',
                 '-mpegts_flags', '+resend_headers',
                 '-muxdelay', '0',
                 '-muxpreload', '0',
@@ -586,6 +568,7 @@ def _write_to_udp(frame, fps=None):
     if writer and writer.stdin:
         try:
             writer.stdin.write(frame.tobytes())
+            writer.stdin.flush()
         except Exception:
             with udp_writer_lock:
                 udp_writer = None
@@ -1316,14 +1299,6 @@ def start_fanout_with_music(
     if not (enable_youtube or enable_twitch or enable_facebook):
         set_status("fanout start skipped: no platform enabled")
         return "fanout start skipped: enable at least one platform"
-
-    if not _can_start_fanout_now():
-        msg = (
-            "fanout start blocked: waiting for AI-filtered processed frames "
-            "(no passthrough allowed)"
-        )
-        set_status(msg)
-        return msg
 
     env_path = os.path.join(_repo_root(), "scripts", "streaming", "rtmp_targets.env")
     env_targets = {

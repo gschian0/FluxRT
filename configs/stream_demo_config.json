@@ -1,12 +1,12 @@
 {
-    "default_prompt": "claymation, shiny texture, cartoon, computer render",
+    "default_prompt": "claymation, sketch, multicolor ink, cosmic background",
     "default_steps": 1,
     "default_seed": 52,
     "models_path": "FLUX.2-klein-4B",
     "int8_models_path": "FLUX.2-klein-4B-int8",
     "resolution": {
-        "height": 160,
-        "width": 288
+        "height": 720,
+        "width": 1280
     },
     "compile_models": false,
     "enable_spatial_cache": true,

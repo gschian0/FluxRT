@@ -21,14 +21,16 @@ AUDIO_INPUT_URL="${AUDIO_INPUT_URL:-udp://127.0.0.1:5002?pkt_size=1316&fifo_size
 TTS_INPUT_URL="${TTS_INPUT_URL:-udp://127.0.0.1:5004?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1}"
 
 ENABLE_TTS_OVERLAY="${ENABLE_TTS_OVERLAY:-1}"
-OUTPUT_WIDTH="${OUTPUT_WIDTH:-426}"
-OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-240}"
-FPS="${FPS:-12}"
-VIDEO_BITRATE="${VIDEO_BITRATE:-1200k}"
-VIDEO_MAXRATE="${VIDEO_MAXRATE:-1200k}"
-VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-2400k}"
-AUDIO_BITRATE="${AUDIO_BITRATE:-96k}"
-VIDEO_TRANSCODE_MODE="${VIDEO_TRANSCODE_MODE:-copy}"
+OUTPUT_WIDTH="${OUTPUT_WIDTH:-1920}"
+OUTPUT_HEIGHT="${OUTPUT_HEIGHT:-1080}"
+FPS="${FPS:-60}"
+VIDEO_BITRATE="${VIDEO_BITRATE:-6000k}"
+VIDEO_MAXRATE="${VIDEO_MAXRATE:-6000k}"
+VIDEO_BUFSIZE="${VIDEO_BUFSIZE:-12000k}"
+AUDIO_BITRATE="${AUDIO_BITRATE:-160k}"
+VIDEO_TRANSCODE_MODE="${VIDEO_TRANSCODE_MODE:-transcode}"
+VIDEO_ENCODER="${VIDEO_ENCODER:-h264_nvenc}"
+VIDEO_PIXEL_FORMAT="${VIDEO_PIXEL_FORMAT:-yuv420p}"
 MUSIC_MIX_VOLUME="${MUSIC_MIX_VOLUME:-1.0}"
 TTS_MIX_VOLUME="${TTS_MIX_VOLUME:-0.85}"
 MUSIC_WAIT_TIMEOUT="${MUSIC_WAIT_TIMEOUT:-120}"
@@ -201,22 +203,27 @@ fi
 
 FILTER_COMPLEX="[1:a]volume=1.0[base];[2:a]volume=${MUSIC_MIX_VOLUME}[music];[3:a]volume=${TTS_VOL_EFFECTIVE}[tts];[base][music][tts]amix=inputs=3:duration=longest:dropout_transition=0:normalize=0,aresample=async=1:min_hard_comp=0.100:first_pts=0[aout]"
 
-if [[ "$VIDEO_TRANSCODE_MODE" == "copy" ]]; then
-  VIDEO_ENCODE_ARGS='-c:v copy'
-  VIDEO_FILTER_ARGS=''
-  VIDEO_FPS_ARGS=''
-else
-  VIDEO_ENCODE_ARGS="-vf scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT} -r ${FPS} -fps_mode cfr -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g $((FPS * 2)) -keyint_min $((FPS * 2)) -sc_threshold 0 -x264-params nal-hrd=cbr:force-cfr=1 -b:v ${VIDEO_BITRATE} -minrate ${VIDEO_BITRATE} -maxrate ${VIDEO_MAXRATE} -bufsize ${VIDEO_BUFSIZE}"
-  VIDEO_FILTER_ARGS=''
-  VIDEO_FPS_ARGS=''
-fi
+# Upscale to target resolution using Lanczos for sharp HD output
+VIDEO_VF_FILTER="scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:flags=lanczos"
 
 if [[ "$VIDEO_SOURCE_MODE" == "synthetic" ]]; then
-  VIDEO_INPUT_ARG="-f lavfi -re -i color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
+  VIDEO_INPUT_ARG="-f lavfi -re -i testsrc2=s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=${FPS}"
   VIDEO_TRANSCODE_MODE="transcode"
 else
   echo "[fanout] binding video UDP directly (will wait for video to arrive)"
   VIDEO_INPUT_ARG="-thread_queue_size 16384 -i \"${VIDEO_INPUT_URL}\""
+fi
+
+if [[ "$VIDEO_TRANSCODE_MODE" == "copy" ]]; then
+  VIDEO_ENCODE_ARGS='-c:v copy'
+elif [[ "$VIDEO_ENCODER" == "h264_nvenc" || "$VIDEO_ENCODER" == "hevc_nvenc" ]]; then
+  # NVENC hardware encoding (h264_nvenc for HD, hevc_nvenc for 2K)
+  echo "$VIDEO_VF_FILTER" > /tmp/fluxrt-vf-filter.txt
+  VIDEO_ENCODE_ARGS="-vf \"\$(cat /tmp/fluxrt-vf-filter.txt)\" -r ${FPS} -fps_mode cfr -c:v ${VIDEO_ENCODER} -preset p4 -tune ll -rc cbr -b:v ${VIDEO_BITRATE} -minrate ${VIDEO_BITRATE} -maxrate ${VIDEO_MAXRATE} -bufsize ${VIDEO_BUFSIZE} -g $((FPS * 2)) -keyint_min $((FPS * 2)) -spatial-aq 1 -temporal-aq 1 -pix_fmt ${VIDEO_PIXEL_FORMAT}"
+else
+  # Software fallback: libx264
+  echo "$VIDEO_VF_FILTER" > /tmp/fluxrt-vf-filter.txt
+  VIDEO_ENCODE_ARGS="-vf \"\$(cat /tmp/fluxrt-vf-filter.txt)\" -r ${FPS} -fps_mode cfr -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g $((FPS * 2)) -keyint_min $((FPS * 2)) -sc_threshold 0 -x264-params nal-hrd=cbr:force-cfr=1 -b:v ${VIDEO_BITRATE} -minrate ${VIDEO_BITRATE} -maxrate ${VIDEO_MAXRATE} -bufsize ${VIDEO_BUFSIZE}"
 fi
 
 cat > "$INGEST_LOOP" <<EOF
