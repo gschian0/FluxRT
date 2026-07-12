@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+# =============================================================================
+# start_audio_mix_bus.sh — Mix music, TTS, and optional SFX into one stream.
+# =============================================================================
+# Inputs:
+#   MUSIC_INPUT_URL  — background music / audio rail (default UDP 5002)
+#   TTS_INPUT_URL    — TTS overlay (default UDP 5004)
+#   SFX_INPUT_URL    — optional sound effects (default UDP 5008)
+# Output:
+#   MIX_OUTPUT_URL   — mixed MPEG-TS audio (default UDP 5006)
+#
+# The mix bus uses ffmpeg with sidechain compression so TTS automatically
+# ducks the music. It restarts automatically if ffmpeg crashes.
+# =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

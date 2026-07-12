@@ -2,7 +2,7 @@
     "default_prompt": "claymation, shiny texture, cartoon, computer render",
     "default_steps": 1,
     "default_seed": 52,
-    "models_path": "FLUX.2-klein-4B",
+    "models_path": "FLUX.2-klein-4B-int8",
     "int8_models_path": "FLUX.2-klein-4B-int8",
     "resolution": {
         "height": 160,

@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# =============================================================================
+# stop_mediamtx_fanout.sh — Stop the MediaMTX fanout stack.
+# =============================================================================
+# Kills MediaMTX and the ingest/egress ffmpeg loops, removes PID files, and
+# cleans up generated loop scripts.
+# =============================================================================
 set -euo pipefail
 
 for pid_file in /tmp/fluxrt-mediamtx-egress.pid /tmp/fluxrt-mediamtx-ingest.pid /tmp/fluxrt-mediamtx.pid; do

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# =============================================================================
+# stop_audio_mix_bus.sh — Stop the audio mix bus.
+# =============================================================================
 set -euo pipefail
 
 MIX_PID="${MIX_PID:-/tmp/fluxrt-audio-mix.pid}"

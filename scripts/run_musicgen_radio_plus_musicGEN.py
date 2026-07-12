@@ -216,6 +216,8 @@ def _start_audio_udp_encoder(sample_rate: int, audio_udp_url: str):
         "-loglevel",
         "error",
         "-y",
+        "-fflags",
+        "+genpts",
         "-f",
         "f32le",
         "-ac",
@@ -225,7 +227,7 @@ def _start_audio_udp_encoder(sample_rate: int, audio_udp_url: str):
         "-i",
         "-",
         "-af",
-        "highpass=f=35,lowpass=f=12000,alimiter=limit=0.85",
+        "highpass=f=35,lowpass=f=12000,alimiter=limit=0.85,aresample=async=1:first_pts=0",
         "-c:a",
         "aac",
         "-b:a",
@@ -234,6 +236,8 @@ def _start_audio_udp_encoder(sample_rate: int, audio_udp_url: str):
         "48000",
         "-ac",
         "2",
+        "-async",
+        "1",
         "-f",
         "mpegts",
         audio_udp_url,
@@ -283,6 +287,16 @@ def _load_conditioning_audio(wav_path: str, sample_rate: int, seconds: float, sf
     return np.clip(arr[-max_samples:], -0.98, 0.98)
 
 
+def _next_clip_index(out_dir: Path) -> int:
+    highest = -1
+    for wav_path in out_dir.glob("musicgen_clip_*.wav"):
+        try:
+            highest = max(highest, int(wav_path.stem.rsplit("_", 1)[1]))
+        except (IndexError, ValueError):
+            continue
+    return highest + 1
+
+
 def _playback_worker(
     audio_queue: "queue.Queue[tuple[int, np.ndarray] | None]",
     sample_rate: int,
@@ -299,7 +313,7 @@ def _playback_worker(
     started = False
     buffered_seconds = 0.0
     buffer: list[tuple[int, np.ndarray]] = []
-    chunk_size = 2048
+    chunk_size = 8192
     fade_samples = max(0, int(crossfade_seconds * sample_rate))
     pending_tail: np.ndarray | None = None
     idle_silence_chunk = np.zeros((int(sample_rate * 0.25),), dtype=np.float32)
@@ -442,17 +456,27 @@ def _playback_worker(
 
     if buffered_seconds >= delay_seconds and len(buffer) > 0:
         print(f"[musicgen] bootstrap buffer ready: {buffered_seconds:.1f}s")
-        streamed_bootstrap_seconds = 0.0
-        for q_index, queued_clip in buffer:
-            if streamed_bootstrap_seconds >= delay_seconds:
-                break
-            _stream_clip(q_index, queued_clip)
-            streamed_bootstrap_seconds += queued_clip.shape[0] / sample_rate
-        print(f"[musicgen] streamed {streamed_bootstrap_seconds:.1f}s bootstrap intro before live queue")
-        buffer = []
         started = True
 
     while True:
+        if started:
+            while True:
+                try:
+                    queued_item = audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if queued_item is None:
+                    buffer = []
+                    break
+                buffer.append(queued_item)
+                buffered_seconds += queued_item[1].shape[0] / sample_rate
+
+            if buffer:
+                q_index, queued_clip = buffer.pop(0)
+                buffered_seconds = max(0.0, buffered_seconds - queued_clip.shape[0] / sample_rate)
+                _stream_clip(q_index, queued_clip)
+                continue
+
         try:
             item = audio_queue.get(timeout=0.25)
         except queue.Empty:
@@ -492,9 +516,6 @@ def _playback_worker(
             if buffered_seconds < delay_seconds:
                 continue
             print(f"[musicgen] backing track buffer ready: {buffered_seconds:.1f}s")
-            for q_index, queued_clip in buffer:
-                _stream_clip(q_index, queued_clip)
-            buffer = []
             started = True
             continue
 
@@ -882,7 +903,7 @@ def main() -> None:
                 round(float(current_guidance_scale), 3),
             )
 
-        index = len(pre_gen_clips) if pre_gen_clips else 0
+        index = max(_next_clip_index(out_dir), len(pre_gen_clips) if pre_gen_clips else 0)
         while True:
             try:
                 with tempfile.TemporaryDirectory(prefix="musicgen_radio_") as tmpdir:

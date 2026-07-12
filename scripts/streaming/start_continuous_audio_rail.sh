@@ -47,12 +47,10 @@ AUDIO_BITRATE="${AUDIO_BITRATE:-128k}"
 # If they're the same, we need to change one. Let's handle this:
 
 if [[ "$MUSIC_INPUT_URL" == "$RAIL_OUTPUT_URL" ]]; then
-  # MusicGen writes directly to 5002 — no relay needed, just monitor
-  echo "MusicGen output URL == rail output URL; MusicGen writes directly to 5002."
-  echo "Rail will only start a fallback if MusicGen dies."
-  MUSIC_INPUT_URL="udp://127.0.0.1:5012?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1"
-  echo "Set MUSIC_INPUT_URL to ${MUSIC_INPUT_URL} (MusicGen should output here)"
-  echo "Rail relays 5012 → 5002"
+  echo "ERROR: MUSIC_INPUT_URL and RAIL_OUTPUT_URL cannot be identical."
+  echo "Set MUSIC_INPUT_URL to a different source port (example: udp://127.0.0.1:5012?pkt_size=1316&fifo_size=50000000&overrun_nonfatal=1)."
+  echo "The rail output can remain on 5002."
+  exit 1
 fi
 
 audio_input_ready() {
@@ -130,9 +128,10 @@ relay_radio() {
 }
 
 relay_silence() {
-  # Last resort: generate silence so the stream never drops
+  # Last resort: generate a short silence segment, then retry MusicGen/radio.
   ffmpeg -hide_banner -loglevel warning \
     -f lavfi -i "anullsrc=channel_layout=stereo:sample_rate=48000" \
+    -t 2 \
     -af "asetpts=PTS-STARTPTS" \
     -c:a aac -b:a "$BITRATE" -ar 48000 -ac 2 \
     -async 1 -max_interleave_delta 0 \
@@ -165,12 +164,24 @@ while true; do
 done
 RAIL_EOF
 
-# Replace placeholders
+# Replace placeholders safely (escape '&' so sed doesn't inject matched text).
+escape_sed_repl() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//&/\\&}"
+  printf '%s' "$s"
+}
+
+MUSIC_INPUT_URL_ESCAPED="$(escape_sed_repl "$MUSIC_INPUT_URL")"
+RAIL_OUTPUT_URL_ESCAPED="$(escape_sed_repl "$RAIL_OUTPUT_URL")"
+RADIO_FALLBACK_URL_ESCAPED="$(escape_sed_repl "$RADIO_FALLBACK_URL")"
+AUDIO_BITRATE_ESCAPED="$(escape_sed_repl "$AUDIO_BITRATE")"
+
 sed -i \
-  -e "s|MUSIC_URL_PLACEHOLDER|${MUSIC_INPUT_URL}|g" \
-  -e "s|RAIL_OUT_PLACEHOLDER|${RAIL_OUTPUT_URL}|g" \
-  -e "s|RADIO_FALLBACK_PLACEHOLDER|${RADIO_FALLBACK_URL}|g" \
-  -e "s|BITRATE_PLACEHOLDER|${AUDIO_BITRATE}|g" \
+  -e "s|MUSIC_URL_PLACEHOLDER|${MUSIC_INPUT_URL_ESCAPED}|g" \
+  -e "s|RAIL_OUT_PLACEHOLDER|${RAIL_OUTPUT_URL_ESCAPED}|g" \
+  -e "s|RADIO_FALLBACK_PLACEHOLDER|${RADIO_FALLBACK_URL_ESCAPED}|g" \
+  -e "s|BITRATE_PLACEHOLDER|${AUDIO_BITRATE_ESCAPED}|g" \
   "$RAIL_LOOP"
 
 chmod +x "$RAIL_LOOP"

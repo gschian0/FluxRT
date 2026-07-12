@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# =============================================================================
+# start_stream_monitor_http.sh — Local HLS preview before going live.
+# =============================================================================
+# Serves an HLS playlist and a small HTML player page from a local directory.
+# Point the fanout at the same HLS directory (ENABLE_LOCAL_MONITOR=1) to preview
+# the stream in a browser before it reaches Twitch/YouTube.
+#
+# URL: http://127.0.0.1:8090/
+# Playlist: http://127.0.0.1:8090/stream.m3u8
+# =============================================================================
 set -euo pipefail
 
 MONITOR_DIR="${MONITOR_HLS_DIR:-/tmp/fluxrt-monitor}"

@@ -1,27 +1,11 @@
-import torch
 import time
 import cv2
 import numpy as np
 import json
-from safetensors.torch import load_file
 from multiprocessing import Process, Value, Manager
 from queue import Empty
 from PIL import Image
-
-from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-from diffusers.models import AutoencoderKLFlux2
-from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM, AutoConfig
-from accelerate import init_empty_weights
-
-from fluxrt.stream_processor.interpolation_model import IFNet
-from fluxrt.stream_processor.transformer_flux2 import Flux2Transformer2DModel
 from fluxrt.utils.shared_tensor import SharedTensor
-from fluxrt.stream_processor.pipeline import Flux2KleinPipeline
-from fluxrt.stream_processor.update_controller import UpdateController
-from fluxrt.stream_processor.postprocessors import (
-    BasePostProcessor,
-    LivePortraitPostProcessor,
-)
 
 
 class ModelInferenceSubprocess:
@@ -67,6 +51,12 @@ class ModelInferenceSubprocess:
         }
 
     def load_models_without_quantization(self):
+        import torch
+        from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+        from diffusers.models import AutoencoderKLFlux2
+        from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM
+        from fluxrt.stream_processor.transformer_flux2 import Flux2Transformer2DModel
+
         device = self.device
         dtype = torch.bfloat16
 
@@ -88,6 +78,12 @@ class ModelInferenceSubprocess:
         )
 
     def load_quantized_models(self):
+        import torch
+        from safetensors.torch import load_file
+        from accelerate import init_empty_weights
+        from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+        from diffusers.models import AutoencoderKLFlux2
+        from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM, AutoConfig
         from optimum.quanto import requantize
         from fluxrt.stream_processor.quantized_flux2 import (
             QuantizedFlux2Transformer2DModel,
@@ -137,6 +133,16 @@ class ModelInferenceSubprocess:
         )
 
     def load_models(self):
+        import torch
+        from safetensors.torch import load_file
+        from fluxrt.stream_processor.interpolation_model import IFNet
+        from fluxrt.stream_processor.pipeline import Flux2KleinPipeline
+        from fluxrt.stream_processor.update_controller import UpdateController
+        from fluxrt.stream_processor.postprocessors import (
+            BasePostProcessor,
+            LivePortraitPostProcessor,
+        )
+
         self.interpolation_model = IFNet()
         self.interpolation_model.load_state_dict(
             load_file("RIFE-safetensors/flownet.safetensors")
@@ -226,6 +232,9 @@ class ModelInferenceSubprocess:
         """
         Initializes all resources required by the inference subprocess.
         """
+        import torch
+
+        self.torch = torch
         self.init_process_state()
         self.init_shared_tensors()
         self.load_models()
@@ -323,6 +332,7 @@ class ModelInferenceSubprocess:
                     self.update_controller.reset_cache()
 
                 elif cmd == "set_mask":
+                    torch = self.torch
                     mask = payload  # numpy uint8 array of shape (h // compression_ratio, w // compression_ratio)
                     mask_tensor = (
                         torch.from_numpy(mask)
@@ -341,6 +351,7 @@ class ModelInferenceSubprocess:
         """
         Reads frame from input shared memory, converts to RGB float16 GPU tensors.
         """
+        torch = self.torch
         frame = self.input_shared_tensor.to_numpy()
         frame_gpu = (
             torch.from_numpy(frame)
@@ -358,6 +369,7 @@ class ModelInferenceSubprocess:
         Interpolates according to interpolation_exp times.
         Batches to [interpolated frames, new frame].
         """
+        torch = self.torch
         if self.previous_frame is None:
             self.previous_frame = frame
 
@@ -397,6 +409,7 @@ class ModelInferenceSubprocess:
         self.output_batch_shared_tensor.copy_from(frames)
 
     def sync_fps_and_send(self, prev_time, frames):
+        torch = self.torch
         now = time.time()
         processing_time = now - prev_time
 
@@ -423,6 +436,7 @@ class ModelInferenceSubprocess:
         Takes frame as np uint8 RGB array
         Returns frame as np uint8 RGB array
         """
+        torch = self.torch
         input_frame = Image.fromarray(frame)
 
         reference_list = [input_frame]
@@ -448,6 +462,7 @@ class ModelInferenceSubprocess:
         return out_image
 
     def convert_np_to_torch(self, frame):
+        torch = self.torch
         frame = (
             torch.from_numpy(frame)
             .to(self.device)
